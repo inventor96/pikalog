@@ -4,12 +4,20 @@
  */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "pikalog-starter",
+	"name": "pikalog",
 	"compatibility_date": "2026-10-06",
 	"main": "server/index.ts",
 	"assets": {
 		"not_found_handling": "single-page-application"
 	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "pikalog-db",
+			"database_id": "00000000-0000-0000-0000-000000000000",
+			"migrations_dir": "migrations"
+		}
+	],
 	"observability": {
 		"enabled": true
 	},

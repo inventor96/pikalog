@@ -1,3 +1,5 @@
+import '@fontsource-variable/dm-sans'
+import '@fontsource/ibm-plex-mono/400.css'
 import './assets/main.css'
 
 import { createApp } from 'vue'

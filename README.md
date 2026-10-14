@@ -1,42 +1,27 @@
-# pikalog-starter
+# Pikalog
 
-This template should help get you started developing with Vue 3 in Vite.
+Expiry-aware inventory tracking for diabetes supplies. Pikalog stores supply inventory only. It does not collect glucose readings, doses, or other health data, and it is not a medical device. Projections are estimates; manufacturer instructions for use take precedence.
 
-## Recommended IDE Setup
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/inventor96/pikalog)
 
-[VS Code](https://code.visualstudio.com/) + [Vue (Official)](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur).
+Each deployment runs in its owner's Cloudflare account. Pikalog is an early-stage project; the deploy flow and fresh-account setup still need end-to-end verification before the button is considered release-ready.
 
-## Recommended Browser Setup
+## Local development
 
-- Chromium-based browsers (Chrome, Edge, Brave, etc.):
-  - [Vue.js devtools](https://chromewebstore.google.com/detail/vuejs-devtools/nhdogjmejiglipccpnnnanhbledajbpd)
-  - [Turn on Custom Object Formatter in Chrome DevTools](http://bit.ly/object-formatters)
-- Firefox:
-  - [Vue.js devtools](https://addons.mozilla.org/en-US/firefox/addon/vue-js-devtools/)
-  - [Turn on Custom Object Formatter in Firefox DevTools](https://fxdx.dev/firefox-devtools-custom-object-formatters/)
-
-## Type Support for `.vue` Imports in TS
-
-TypeScript cannot handle type information for `.vue` imports by default, so we replace the `tsc` CLI with `vue-tsc` for type checking. In editors, we need [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) to make the TypeScript language service aware of `.vue` types.
-
-## Customize configuration
-
-See [Vite Configuration Reference](https://vite.dev/config/).
-
-## Project Setup
+Requirements: Node.js 22.18 or newer and npm.
 
 ```sh
 npm install
-```
-
-### Compile and Hot-Reload for Development
-
-```sh
+npm run db:migrate:local
 npm run dev
 ```
 
-### Type-Check, Compile and Minify for Production
+The local Worker uses a local D1 database. Run `npm test` for the domain tests and `npm run build` for type-checking and a production build.
 
-```sh
-npm run build
-```
+## Cloudflare deployment
+
+The Deploy to Cloudflare button creates a Git copy in your account and provisions the configured D1 binding. The deploy command applies D1 migrations before publishing the Worker and Vue assets. The repository must be public for the button to work.
+
+## Privacy and intended use
+
+The Worker is the only app component that accesses D1. Catalog sync downloads public catalog files; it does not send inventory data upstream. Do not enter glucose, insulin, dose, or other health data. Pikalog is not a medical device and does not provide medical advice. Use supplies according to the manufacturer's instructions for use.
