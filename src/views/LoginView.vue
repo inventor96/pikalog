@@ -67,7 +67,7 @@ async function signIn() {
 			</div>
 			<p class="login-eyebrow">PRIVATE WORKSPACE</p>
 			<h1 id="login-title">Sign in</h1>
-			<p class="login-description">Enter your household password. At least 8 characters; 12 to 15 or more is strongly recommended.</p>
+			<p class="login-description">Enter your household password to continue.</p>
 
 			<div v-if="isChecking" class="login-notice" aria-live="polite">Checking workspace…</div>
 			<div v-else-if="isConfigured === null" class="login-notice" role="alert">{{ errorMessage }}</div>
