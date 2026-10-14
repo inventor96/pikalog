@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { AlertCircle, ArrowDownRight, ArrowUpRight, RefreshCw } from '@lucide/vue'
+import { AlertCircle, ArrowDownRight, ArrowUpRight, Camera, RefreshCw } from '@lucide/vue'
+import BarcodeScanner from '@/components/BarcodeScanner.vue'
 
 type Category = {
   id: number
@@ -19,6 +20,7 @@ const overview = ref<Overview | null>(null)
 const isLoading = ref(false)
 const errorMessage = ref('')
 const refreshedAt = ref('')
+const scannerOpen = ref(false)
 
 const todayLabel = computed(() =>
   new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).format(new Date()),
@@ -73,6 +75,10 @@ onMounted(loadCategories)
       <button class="refresh-button" type="button" :disabled="isLoading" @click="loadCategories">
         <RefreshCw :size="16" :class="{ 'is-spinning': isLoading }" aria-hidden="true" />
         <span>Refresh</span>
+      </button>
+      <button class="scan-button" type="button" @click="scannerOpen = true">
+        <Camera :size="16" aria-hidden="true" />
+        <span>Scan</span>
       </button>
     </section>
 
@@ -171,5 +177,7 @@ onMounted(loadCategories)
       <span>Not a medical device. Projections are estimates; follow the manufacturer's instructions for use.</span>
       <a href="https://github.com/inventor96/pikalog" target="_blank" rel="noreferrer">Pikalog on GitHub</a>
     </footer>
+
+    <BarcodeScanner v-if="scannerOpen" @close="scannerOpen = false" />
   </div>
 </template>
