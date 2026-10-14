@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { AlertCircle, ArrowDownRight, ArrowUpRight, Camera, RefreshCw } from '@lucide/vue'
+import { AlertCircle, ArrowDownRight, ArrowUpRight, Camera, LogOut, RefreshCw } from '@lucide/vue'
+import { useRouter } from 'vue-router'
 import BarcodeScanner from '@/components/BarcodeScanner.vue'
 
 type Category = {
@@ -21,6 +22,8 @@ const isLoading = ref(false)
 const errorMessage = ref('')
 const refreshedAt = ref('')
 const scannerOpen = ref(false)
+const isSigningOut = ref(false)
+const router = useRouter()
 
 const todayLabel = computed(() =>
   new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).format(new Date()),
@@ -36,6 +39,10 @@ async function loadCategories() {
       fetch('/api/overview'),
     ])
     if (!categoriesResponse.ok || !overviewResponse.ok) {
+      if (categoriesResponse.status === 401 || overviewResponse.status === 401) {
+        await router.replace({ name: 'login' })
+        return
+      }
       throw new Error('Could not load supply categories.')
     }
 
@@ -56,6 +63,19 @@ async function loadCategories() {
   }
 }
 
+async function signOut() {
+  isSigningOut.value = true
+  try {
+    const response = await fetch('/api/auth/logout', { method: 'POST' })
+    if (!response.ok) throw new Error('Could not sign out.')
+    await router.replace({ name: 'login' })
+  } catch {
+    errorMessage.value = 'Could not sign out. Check the connection and try again.'
+  } finally {
+    isSigningOut.value = false
+  }
+}
+
 onMounted(loadCategories)
 </script>
 
@@ -63,7 +83,13 @@ onMounted(loadCategories)
   <div id="overview" class="overview-page">
     <header class="topbar">
       <div class="breadcrumb"><span>PIKALOG</span><span class="breadcrumb-divider">/</span><span>OVERVIEW</span></div>
-      <div class="topbar-status"><span class="status-dot"></span>Private workspace</div>
+      <div class="topbar-status">
+        <span class="status-dot"></span>Private workspace
+        <button class="signout-button" type="button" :disabled="isSigningOut" @click="signOut">
+          <LogOut :size="14" aria-hidden="true" />
+          <span>{{ isSigningOut ? 'Signing out' : 'Sign out' }}</span>
+        </button>
+      </div>
     </header>
 
     <section class="page-intro">

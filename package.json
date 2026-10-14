@@ -46,6 +46,9 @@
     "bindings": {
       "DB": {
         "description": "Pikalog inventory database. Cloudflare provisions this D1 database during deployment."
+    },
+    "PIKALOG_PASSWORD": {
+        "description": "Set a private household password of at least 8 characters; 12 to 15 or more is strongly recommended."
       }
     }
   }

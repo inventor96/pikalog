@@ -218,9 +218,9 @@ function closeDialog() {
 			<div v-else-if="inputMethod === 'camera'" class="camera-panel">
 				<div class="camera-view">
 					<video
-						v-show="cameraActive"
 						ref="videoElement"
 						class="camera-video"
+						:class="{ 'camera-video--hidden': !cameraActive }"
 						aria-label="Live camera view"
 						playsinline
 						muted
@@ -388,6 +388,10 @@ function closeDialog() {
 	width: 100%;
 	height: 100%;
 	object-fit: cover;
+}
+
+.camera-video--hidden {
+	display: none;
 }
 
 .camera-idle {

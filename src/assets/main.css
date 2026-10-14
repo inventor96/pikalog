@@ -163,6 +163,31 @@
   font-size: 12px;
 }
 
+.signout-button {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 4px;
+  margin-left: 8px;
+  background: transparent;
+  padding: 0 8px;
+  color: var(--color-ink-soft);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.signout-button:hover {
+  background: var(--color-white);
+  color: var(--color-ink);
+}
+
+.signout-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .page-intro {
   display: flex;
   align-items: flex-end;
@@ -560,6 +585,12 @@
 
   .topbar-status {
     font-size: 10px;
+  }
+
+  .signout-button {
+    min-height: 28px;
+    margin-left: 2px;
+    padding: 0 6px;
   }
 
   .page-intro {
