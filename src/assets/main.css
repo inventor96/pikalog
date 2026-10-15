@@ -523,6 +523,17 @@
   line-height: 1.5;
 }
 
+.catalog-contribution-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: -8px 0 16px;
+  color: var(--color-accent);
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .receipt-rescan {
   margin: -8px 0 16px;
   border: 1px solid var(--color-line-strong);

@@ -49,3 +49,5 @@ For an existing deployment, set or update `PIKALOG_PASSWORD` with `npx wrangler 
 ## Privacy and intended use
 
 The Worker is the only app component that accesses D1. Catalog sync downloads public catalog files; it does not send inventory data upstream. Do not enter glucose, insulin, dose, or other health data. Pikalog is not a medical device and does not provide medical advice. Use supplies according to the manufacturer's instructions for use.
+
+The optional **Report catalog gap** action opens a prefilled GitHub issue with manufacturer, product name, and GTIN or unrecognized barcode text. It excludes receipt dates and inventory history. Review unrecognized barcode text for lot, serial, or expiry details before submitting.

@@ -18,5 +18,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run catalog:validate
+      - run: npm run db:migrate:local
       - run: npm test
       - run: npm run build

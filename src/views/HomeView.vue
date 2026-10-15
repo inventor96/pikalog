@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { AlertCircle, ArrowDownRight, ArrowUpRight, Camera, LogOut, RefreshCw, X } from '@lucide/vue'
+import { AlertCircle, ArrowDownRight, ArrowUpRight, Camera, ExternalLink, LogOut, RefreshCw, X } from '@lucide/vue'
 import { useRouter } from 'vue-router'
 import BarcodeScanner from '@/components/BarcodeScanner.vue'
 import type { BarcodeParseResult } from '@/barcode/ingest'
+import { buildCatalogSuggestionUrl } from '@/domain/catalog-contribution'
 
 type Category = {
   id: number
@@ -164,6 +165,13 @@ const hasScanProblem = computed(() => {
     || result?.kind === 'unknown'
     || (result?.kind === 'gs1' && result.warnings.length > 0)
 })
+const catalogSuggestionUrl = computed(() => matchedProduct.value
+  ? null
+  : buildCatalogSuggestionUrl({
+    barcode: scannedBarcode.value,
+    manufacturer: manufacturer.value,
+    productName: productName.value,
+  }))
 
 function activityLabel(type: string): string {
   switch (type) {
@@ -842,6 +850,16 @@ onMounted(loadDashboard)
         <p class="receipt-code">{{ scannedBarcode.raw }}</p>
         <p v-if="scannedBarcode.kind === 'invalid'" class="receipt-warning">{{ scannedBarcode.reason }}</p>
         <p v-else-if="scannedBarcode.kind === 'unknown'" class="receipt-warning">No product fields were recognized. Add the product details to save this barcode.</p>
+        <a
+          v-if="catalogSuggestionUrl"
+          class="catalog-contribution-link"
+          :href="catalogSuggestionUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <ExternalLink :size="14" aria-hidden="true" />
+          Report catalog gap
+        </a>
         <ul v-if="scannedBarcode.kind === 'gs1' && scannedBarcode.warnings.length" class="receipt-warnings">
           <li v-for="warning in scannedBarcode.warnings" :key="warning">{{ warning }}</li>
         </ul>
