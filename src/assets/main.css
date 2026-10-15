@@ -191,6 +191,12 @@
   padding: 41px 0 28px;
 }
 
+.page-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .eyebrow {
   margin: 0 0 9px;
   color: var(--color-green);
@@ -822,7 +828,6 @@
 }
 
 .activity-note {
-  border-top: 1px solid var(--color-line);
   padding: 16px 0;
 }
 
@@ -1166,7 +1171,7 @@
     padding: 29px 0 21px;
   }
 
-  .page-intro > div:last-child {
+  .page-actions {
     display: flex;
     gap: 7px;
   }

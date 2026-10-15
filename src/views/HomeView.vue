@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { AlertCircle, ArrowDownRight, ArrowUpRight, Camera, ExternalLink, LogOut, RefreshCw, X } from '@lucide/vue'
+import { AlertCircle, ArrowDownRight, ArrowUpRight, Camera, ExternalLink, RefreshCw, X } from '@lucide/vue'
 import { useRouter } from 'vue-router'
 import BarcodeScanner from '@/components/BarcodeScanner.vue'
+import PageLayout from '@/components/PageLayout.vue'
 import type { BarcodeParseResult } from '@/barcode/ingest'
 import { buildCatalogSuggestionUrl } from '@/domain/catalog-contribution'
 
@@ -15,38 +16,6 @@ type Category = {
 
 type Overview = {
   packageCount: number
-  eventCount: number
-}
-
-type CatalogStatus = {
-  version: string | null
-  lastSyncedAt: string | null
-  status: 'not_synced' | 'seeded' | 'success' | 'error' | string
-  lastError: string | null
-}
-
-type ActivityEvent = {
-  id: number
-  type: string
-  occurredOn: string
-  qty: number
-  inferred: number
-  productName: string
-  unitSerial: string | null
-  endReason: string | null
-}
-
-type DurationStatistic = {
-  productId: number
-  productName: string
-  sampleCount: number
-  meanDays: number | null
-  medianDays: number | null
-  lastTenMeanDays: number | null
-  lastTenMedianDays: number | null
-  loggedSampleCount: number
-  inferredSampleCount: number
-  earlyFailureRate: number | null
 }
 
 type CategoryForecast = {
@@ -106,14 +75,8 @@ const categories = ref<Category[]>([])
 const products = ref<Product[]>([])
 const overview = ref<Overview | null>(null)
 const packages = ref<InventoryPackage[]>([])
-const activityEvents = ref<ActivityEvent[]>([])
-const durationStats = ref<DurationStatistic[]>([])
 const categoryForecasts = ref<CategoryForecast[]>([])
-const includeProjectedReceipts = ref(true)
-const catalogStatus = ref<CatalogStatus>({ version: null, lastSyncedAt: null, status: 'not_synced', lastError: null })
 const isLoading = ref(false)
-const isSavingProjectionSetting = ref(false)
-const isSyncingCatalog = ref(false)
 const errorMessage = ref('')
 const scanNotice = ref('')
 const scannerOpen = ref(false)
@@ -136,7 +99,6 @@ const receivedOn = ref(todayIsoDate())
 const isSavingReceipt = ref(false)
 const receiptError = ref('')
 const openingPackageId = ref<number | null>(null)
-const isSigningOut = ref(false)
 const router = useRouter()
 
 function todayIsoDate(): string {
@@ -154,7 +116,6 @@ const earliestRunOut = computed(() => categoryForecasts.value
 const nextPickForecast = computed(() => categoryForecasts.value
   .filter((forecast) => forecast.nextPickProduct)
   .sort((first, second) => (first.runOutDate ?? '9999').localeCompare(second.runOutDate ?? '9999'))[0] ?? null)
-const hasProjectedReceipts = computed(() => categoryForecasts.value.some((forecast) => forecast.projectedReceipts.length > 0))
 const containedProducts = computed(() => products.value.filter((product) =>
   product.category_id === Number(categoryId.value) && product.contains_product_id === null,
 ))
@@ -172,110 +133,43 @@ const catalogSuggestionUrl = computed(() => matchedProduct.value
     productName: productName.value,
   }))
 
-function activityLabel(type: string): string {
-  switch (type) {
-    case 'received': return 'Received'
-    case 'opened': return 'Opened package'
-    case 'unit_started': return 'Started unit'
-    case 'unit_ended': return 'Ended unit'
-    case 'discarded': return 'Discarded'
-    default: return 'Stock adjusted'
-  }
-}
-
 async function loadDashboard() {
   isLoading.value = true
   errorMessage.value = ''
 
   try {
-    const [categoriesResponse, productsResponse, overviewResponse, inventoryResponse, activityResponse, forecastResponse, catalogStatusResponse] = await Promise.all([
+    const [categoriesResponse, productsResponse, overviewResponse, inventoryResponse, forecastResponse] = await Promise.all([
       fetch('/api/categories'),
       fetch('/api/products'),
       fetch('/api/overview'),
       fetch('/api/inventory'),
-      fetch('/api/activity'),
       fetch(`/api/forecast?today=${todayIsoDate()}`),
-      fetch('/api/catalog/status'),
     ])
-    if (!categoriesResponse.ok || !productsResponse.ok || !overviewResponse.ok || !inventoryResponse.ok || !activityResponse.ok || !forecastResponse.ok || !catalogStatusResponse.ok) {
-      if ([categoriesResponse.status, productsResponse.status, overviewResponse.status, inventoryResponse.status, activityResponse.status, forecastResponse.status, catalogStatusResponse.status].includes(401)) {
+    if (!categoriesResponse.ok || !productsResponse.ok || !overviewResponse.ok || !inventoryResponse.ok || !forecastResponse.ok) {
+      if ([categoriesResponse.status, productsResponse.status, overviewResponse.status, inventoryResponse.status, forecastResponse.status].includes(401)) {
         await router.replace({ name: 'login' })
         return
       }
       throw new Error('Could not load the inventory.')
     }
 
-    const [categoryData, productData, overviewData, inventoryData, activityData, forecastData, catalogStatusData] = await Promise.all([
+    const [categoryData, productData, overviewData, inventoryData, forecastData] = await Promise.all([
       categoriesResponse.json() as Promise<{ categories: Category[] }>,
       productsResponse.json() as Promise<{ products: Product[] }>,
       overviewResponse.json() as Promise<Overview>,
       inventoryResponse.json() as Promise<{ packages: InventoryPackage[] }>,
-      activityResponse.json() as Promise<{ events: ActivityEvent[]; durationStats: DurationStatistic[] }>,
-      forecastResponse.json() as Promise<{ categories: CategoryForecast[]; includeProjectedReceipts: boolean }>,
-      catalogStatusResponse.json() as Promise<CatalogStatus>,
+      forecastResponse.json() as Promise<{ categories: CategoryForecast[] }>,
     ])
     categories.value = categoryData.categories
     products.value = productData.products
     overview.value = overviewData
     packages.value = inventoryData.packages
-    activityEvents.value = activityData.events
-    durationStats.value = activityData.durationStats
     categoryForecasts.value = forecastData.categories
-    includeProjectedReceipts.value = forecastData.includeProjectedReceipts
-    catalogStatus.value = catalogStatusData
     if (!categoryId.value && categories.value[0]) categoryId.value = String(categories.value[0].id)
   } catch {
     errorMessage.value = 'The inventory service is unavailable. Try refreshing.'
   } finally {
     isLoading.value = false
-  }
-}
-
-async function saveProjectionSetting(event: Event) {
-  const checkbox = event.target as HTMLInputElement
-  const previousValue = includeProjectedReceipts.value
-  isSavingProjectionSetting.value = true
-  try {
-    const response = await fetch('/api/settings', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ includeProjectedReceipts: checkbox.checked }),
-    })
-    if (response.status === 401) {
-      await router.replace({ name: 'login' })
-      return
-    }
-    if (!response.ok) throw new Error('Could not save the projection setting.')
-    includeProjectedReceipts.value = checkbox.checked
-    await loadDashboard()
-  } catch {
-    checkbox.checked = previousValue
-    errorMessage.value = 'Could not save the projection setting. Try again.'
-  } finally {
-    isSavingProjectionSetting.value = false
-  }
-}
-
-async function syncCatalogNow() {
-  isSyncingCatalog.value = true
-  try {
-    const response = await fetch('/api/catalog/sync', { method: 'POST' })
-    if (response.status === 401) {
-      await router.replace({ name: 'login' })
-      return
-    }
-    if (!response.ok) throw new Error('Catalog sync failed.')
-    await loadDashboard()
-  } catch {
-    errorMessage.value = 'Catalog sync failed. The last available catalog is still in use.'
-    try {
-      const response = await fetch('/api/catalog/status')
-      if (response.ok) catalogStatus.value = await response.json() as CatalogStatus
-    } catch {
-      return
-    }
-  } finally {
-    isSyncingCatalog.value = false
   }
 }
 
@@ -548,41 +442,12 @@ function closeReceiptDialog() {
   scannedBarcode.value = null
 }
 
-async function signOut() {
-  isSigningOut.value = true
-  try {
-    const response = await fetch('/api/auth/logout', { method: 'POST' })
-    if (!response.ok) throw new Error('Could not sign out.')
-    await router.replace({ name: 'login' })
-  } catch {
-    errorMessage.value = 'Could not sign out. Check the connection and try again.'
-  } finally {
-    isSigningOut.value = false
-  }
-}
-
 onMounted(loadDashboard)
 </script>
 
 <template>
-  <div id="overview" class="overview-page">
-    <header class="topbar">
-      <div class="breadcrumb"><span>PIKALOG</span><span class="breadcrumb-divider">/</span><span>OVERVIEW</span></div>
-      <div class="topbar-status">
-        <span class="status-dot"></span>Private workspace
-        <button class="signout-button" type="button" :disabled="isSigningOut" @click="signOut">
-          <LogOut :size="14" aria-hidden="true" />
-          <span>{{ isSigningOut ? 'Signing out' : 'Sign out' }}</span>
-        </button>
-      </div>
-    </header>
-
-    <section class="page-intro">
-      <div>
-        <p class="eyebrow">SUPPLY LEDGER</p>
-        <h1>Your supplies, in view.</h1>
-        <p class="date-line">{{ todayLabel }}</p>
-      </div>
+  <PageLayout id="overview" section="OVERVIEW" eyebrow="SUPPLY LEDGER" title="Your supplies, in view." :detail="todayLabel">
+    <template #actions>
       <button class="refresh-button" type="button" :disabled="isLoading" @click="loadDashboard">
         <RefreshCw :size="16" :class="{ 'is-spinning': isLoading }" aria-hidden="true" />
         <span>Refresh</span>
@@ -591,7 +456,7 @@ onMounted(loadDashboard)
         <Camera :size="16" aria-hidden="true" />
         <span>Scan</span>
       </button>
-    </section>
+    </template>
     <p v-if="scanNotice" class="scan-notice" role="status">{{ scanNotice }}</p>
 
     <section class="metrics-row" aria-label="Supply summary">
@@ -660,140 +525,6 @@ onMounted(loadDashboard)
         </article>
       </div>
     </section>
-
-    <section id="activity" class="ledger-section activity-section">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">EVENT HISTORY</p>
-          <h2>Recent activity</h2>
-        </div>
-        <span class="section-count">{{ overview ? `${overview.eventCount} EVENTS` : '— EVENTS' }}</span>
-      </div>
-      <div v-if="durationStats.length" class="duration-list">
-        <article v-for="stat in durationStats" :key="stat.productId" class="duration-row">
-          <div class="duration-product">
-            <strong>{{ stat.productName }}</strong>
-            <span>{{ stat.sampleCount }} completed samples · {{ stat.loggedSampleCount }} logged · {{ stat.inferredSampleCount }} inferred</span>
-          </div>
-          <div class="duration-measure">
-            <span class="duration-value">{{ stat.medianDays ?? '—' }}</span>
-            <span>median days</span>
-          </div>
-          <div class="duration-measure">
-            <span class="duration-value">{{ stat.meanDays?.toFixed(1) ?? '—' }}</span>
-            <span>mean days</span>
-          </div>
-          <div class="duration-measure">
-            <span class="duration-value">{{ stat.lastTenMeanDays?.toFixed(1) ?? '—' }}</span>
-            <span>last 10 mean</span>
-          </div>
-          <div class="duration-measure">
-            <span class="duration-value">{{ stat.earlyFailureRate === null ? '—' : `${Math.round(stat.earlyFailureRate * 100)}%` }}</span>
-            <span>early failures</span>
-          </div>
-        </article>
-      </div>
-      <p v-else class="activity-note">Completed wear durations will appear after a unit ends or a new unit starts.</p>
-      <div v-if="activityEvents.length" class="event-list" aria-label="Recent ledger events">
-        <article v-for="event in activityEvents" :key="event.id" class="event-row">
-          <span class="event-date">{{ event.occurredOn }}</span>
-          <span class="event-type">{{ activityLabel(event.type) }}</span>
-          <span class="event-product">{{ event.productName }}<template v-if="event.unitSerial"> · {{ event.unitSerial }}</template></span>
-          <span v-if="event.inferred" class="event-reason">Inferred</span>
-          <span v-if="event.endReason" class="event-reason">{{ event.endReason.replace('_', ' ') }}</span>
-        </article>
-      </div>
-      <p v-else class="activity-note">No ledger events yet.</p>
-    </section>
-
-    <section id="outlook" class="ledger-section activity-section">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">EXPIRY-AWARE FORECAST</p>
-          <h2>Run-out outlook</h2>
-        </div>
-        <div class="forecast-controls">
-          <div class="catalog-status" role="status">
-            <strong>
-              {{ catalogStatus.status === 'error' && catalogStatus.lastError === 'catalog_schema_unsupported'
-                ? 'Update app to use catalog'
-                : catalogStatus.status === 'error' ? 'Catalog sync failed'
-                  : catalogStatus.version ? `Catalog ${catalogStatus.version}` : 'Bundled catalog' }}
-            </strong>
-            <span v-if="catalogStatus.lastSyncedAt">Synced {{ catalogStatus.lastSyncedAt.slice(0, 10) }}</span>
-            <span v-if="catalogStatus.lastError && catalogStatus.lastError !== 'catalog_schema_unsupported'">{{ catalogStatus.lastError }}</span>
-          </div>
-          <button
-            class="catalog-sync-button"
-            type="button"
-            :disabled="isSyncingCatalog"
-            aria-label="Sync catalog now"
-            title="Sync catalog now"
-            @click="syncCatalogNow"
-          >
-            <RefreshCw :size="15" :class="{ 'is-spinning': isSyncingCatalog }" aria-hidden="true" />
-          </button>
-          <label class="projection-toggle">
-            <input
-              type="checkbox"
-              :checked="includeProjectedReceipts"
-              :disabled="isSavingProjectionSetting"
-              @change="saveProjectionSetting"
-            />
-            <span>Include projected receipts</span>
-          </label>
-        </div>
-      </div>
-      <div v-if="categoryForecasts.length" class="forecast-list">
-        <article v-for="forecast in categoryForecasts" :key="forecast.categoryId" class="forecast-row">
-          <div class="forecast-category">
-            <strong>{{ forecast.categoryName }}</strong>
-            <span>{{ forecast.stockUnits }} unstarted units · {{ forecast.activeUnits }} active</span>
-          </div>
-          <div class="forecast-measure">
-            <strong>{{ forecast.runOutDate ?? '—' }}</strong>
-            <span>{{ forecast.stockDays === null ? 'duration unavailable' : `${Math.ceil(forecast.stockDays)} estimated days` }}</span>
-          </div>
-          <div class="forecast-measure">
-            <strong>{{ forecast.nextPickProduct ?? 'No pick' }}</strong>
-            <span>{{ forecast.nextPick === 'filler' ? `${forecast.fillerSlotsSafe} safe filler slots` : forecast.nextPick === 'hard' ? 'hard-expiry stock first' : 'no unexpired stock' }}</span>
-          </div>
-          <div class="forecast-measure">
-            <strong>{{ forecast.wasteForecast.preferred }} / {{ forecast.wasteForecast.tolerated }}</strong>
-            <span>preferred / tolerated waste</span>
-          </div>
-          <div class="forecast-measure">
-            <strong>{{ forecast.surplusPerQuarter === null ? '—' : forecast.surplusPerQuarter.toFixed(1) }}</strong>
-            <span>
-              {{ forecast.wasteForecast.preferred > 0 && forecast.fillerSlotsSafe === 0 && (forecast.surplusPerQuarter ?? 0) > 0
-                ? 'Supply outpaces use per quarter'
-                : 'estimated surplus units per quarter' }}
-            </span>
-          </div>
-          <div v-if="forecast.projectedReceipts.length" class="projected-receipt-list">
-            <span class="projected-receipt-label">ESTIMATED ARRIVALS</span>
-            <span v-for="receipt in forecast.projectedReceipts" :key="`${receipt.productName}-${receipt.arrivalOn}`">
-              {{ receipt.arrivalOn }} · {{ receipt.productName }} × {{ receipt.quantity }}<template v-if="receipt.expiry"> · expiry {{ receipt.expiry }}</template>
-            </span>
-          </div>
-          <ul v-if="forecast.assumptions.length || forecast.expiredUnits" class="forecast-assumptions">
-            <li v-if="forecast.expiredUnits">{{ forecast.expiredUnits }} expired units excluded</li>
-            <li v-for="assumption in forecast.assumptions" :key="assumption">{{ assumption }}</li>
-          </ul>
-        </article>
-      </div>
-      <p v-if="!categoryForecasts.length" class="activity-note">
-        Receive stock to see run-out and expiry-aware pick estimates.
-      </p>
-      <p v-else-if="includeProjectedReceipts && !hasProjectedReceipts" class="activity-note">
-        Projected receipts need two distinct dates after the first receipt date per product.
-      </p>
-    </section>
-
-    <footer class="disclaimer">
-      <span>Not a medical device. Projections are estimates; follow the manufacturer's instructions for use.</span>
-      <a href="https://github.com/inventor96/pikalog" target="_blank" rel="noreferrer">Pikalog on GitHub</a>
-    </footer>
 
     <BarcodeScanner
       v-if="scannerOpen"
@@ -918,5 +649,5 @@ onMounted(loadDashboard)
         </form>
       </section>
     </div>
-  </div>
+  </PageLayout>
 </template>

@@ -34,19 +34,19 @@ const route = useRoute()
           <span>Configuration</span>
         </RouterLink>
         <RouterLink
-          to="/#activity"
+          to="/activity"
           class="nav-link"
-          :class="{ 'nav-link--active': route.name === 'home' && route.hash === '#activity' }"
-          :aria-current="route.name === 'home' && route.hash === '#activity' ? 'page' : undefined"
+          :class="{ 'nav-link--active': route.name === 'activity' }"
+          :aria-current="route.name === 'activity' ? 'page' : undefined"
         >
           <ClipboardList :size="18" :stroke-width="1.8" />
           <span>Activity</span>
         </RouterLink>
         <RouterLink
-          to="/#outlook"
+          to="/outlook"
           class="nav-link"
-          :class="{ 'nav-link--active': route.name === 'home' && route.hash === '#outlook' }"
-          :aria-current="route.name === 'home' && route.hash === '#outlook' ? 'page' : undefined"
+          :class="{ 'nav-link--active': route.name === 'outlook' }"
+          :aria-current="route.name === 'outlook' ? 'page' : undefined"
         >
           <ChartNoAxesCombined :size="18" :stroke-width="1.8" />
           <span>Outlook</span>

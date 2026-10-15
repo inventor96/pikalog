@@ -1,7 +1,9 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import ConfigurationView from '../views/ConfigurationView.vue'
+import ActivityView from '../views/ActivityView.vue'
 import HomeView from '../views/HomeView.vue'
 import LoginView from '../views/LoginView.vue'
+import OutlookView from '../views/OutlookView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -20,6 +22,16 @@ const router = createRouter({
       path: '/configuration',
       name: 'configuration',
       component: ConfigurationView,
+    },
+    {
+      path: '/activity',
+      name: 'activity',
+      component: ActivityView,
+    },
+    {
+      path: '/outlook',
+      name: 'outlook',
+      component: OutlookView,
     },
     {
       path: '/login',

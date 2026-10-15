@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { AlertCircle, LogOut } from '@lucide/vue'
+import { AlertCircle } from '@lucide/vue'
 import { useRouter } from 'vue-router'
+import PageLayout from '@/components/PageLayout.vue'
 
 type Category = {
   id: number
@@ -32,8 +33,6 @@ const categoriesLoading = ref(true)
 const productsLoading = ref(true)
 const categoriesError = ref('')
 const productsError = ref('')
-const isSigningOut = ref(false)
-const signOutError = ref('')
 
 async function loadCategories() {
   categoriesLoading.value = true
@@ -90,20 +89,6 @@ function expiryRuleLabel(rule: Product['expiry_rule']): string {
   }
 }
 
-async function signOut() {
-  isSigningOut.value = true
-  signOutError.value = ''
-  try {
-    const response = await fetch('/api/auth/logout', { method: 'POST' })
-    if (!response.ok) throw new Error('Could not sign out.')
-    await router.replace({ name: 'login' })
-  } catch {
-    signOutError.value = 'Could not sign out. Check the connection and try again.'
-  } finally {
-    isSigningOut.value = false
-  }
-}
-
 onMounted(() => {
   void loadCategories()
   void loadProducts()
@@ -111,30 +96,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="overview-page configuration-page">
-    <header class="topbar">
-      <div class="breadcrumb"><span>PIKALOG</span><span class="breadcrumb-divider">/</span><span>CONFIGURATION</span></div>
-      <div class="topbar-status">
-        <span class="status-dot"></span>Private workspace
-        <button class="signout-button" type="button" :disabled="isSigningOut" @click="signOut">
-          <LogOut :size="14" aria-hidden="true" />
-          <span>{{ isSigningOut ? 'Signing out' : 'Sign out' }}</span>
-        </button>
-      </div>
-    </header>
-
-    <div v-if="signOutError" class="load-error" role="alert">
-      <AlertCircle :size="17" aria-hidden="true" />
-      <span>{{ signOutError }}</span>
-    </div>
-
-    <section class="page-intro">
-      <div>
-        <p class="eyebrow">CATALOG</p>
-        <h1>Configuration</h1>
-      </div>
-    </section>
-
+  <PageLayout section="CONFIGURATION" eyebrow="CATALOG" title="Configuration" class="configuration-page">
     <section class="ledger-section category-section">
       <div class="section-heading">
         <div>
@@ -212,5 +174,5 @@ onMounted(() => {
         </article>
       </div>
     </section>
-  </div>
+  </PageLayout>
 </template>
