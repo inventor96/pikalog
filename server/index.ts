@@ -30,6 +30,10 @@ type Product = {
 	gtin: string | null
 	contains_product_id: number | null
 	contains_qty: number | null
+	rated_wear_days: number | null
+	min_samples: number
+	expiry_rule: 'finish_by' | 'start_by' | 'none'
+	expiry_strictness: 'hard' | 'soft'
 }
 
 function isIsoDate(value: string): boolean {
@@ -260,7 +264,8 @@ app.get('/api/products', async (context) => {
 	const { results } = await context.env.DB.prepare(`
 		SELECT products.id, products.category_id, categories.name AS category_name,
 			products.manufacturer, products.name, products.gtin,
-			products.contains_product_id, products.contains_qty
+			products.contains_product_id, products.contains_qty, products.rated_wear_days,
+			products.min_samples, products.expiry_rule, products.expiry_strictness
 		FROM products
 	JOIN categories ON categories.id = products.category_id
 	ORDER BY categories.id, products.manufacturer, products.name
@@ -277,6 +282,10 @@ app.post('/api/products', async (context) => {
 		gtin?: unknown
 		containsProductId?: unknown
 		containsQty?: unknown
+		ratedWearDays?: unknown
+		minSamples?: unknown
+		expiryRule?: unknown
+		expiryStrictness?: unknown
 	}>().catch(() => null)
 	const categoryId = body?.categoryId
 	const manufacturer = typeof body?.manufacturer === 'string' ? body.manufacturer.trim() : ''
@@ -286,11 +295,21 @@ app.post('/api/products', async (context) => {
 		? null
 		: Number(body.containsProductId)
 	const containsQty = body?.containsQty === undefined ? 1 : body.containsQty
+	const ratedWearDays = body?.ratedWearDays === undefined || body.ratedWearDays === null || body.ratedWearDays === ''
+		? null
+		: Number(body.ratedWearDays)
+	const minSamples = body?.minSamples === undefined ? 3 : body.minSamples
+	const expiryRule = body?.expiryRule === undefined ? 'finish_by' : body.expiryRule
+	const expiryStrictness = body?.expiryStrictness === undefined ? 'hard' : body.expiryStrictness
 
 	if (!Number.isSafeInteger(categoryId) || Number(categoryId) <= 0
 		|| !manufacturer || manufacturer.length > 120
 		|| !name || name.length > 160
 		|| !Number.isSafeInteger(containsQty) || Number(containsQty) <= 0 || Number(containsQty) > 10000
+		|| (ratedWearDays !== null && (!Number.isSafeInteger(ratedWearDays) || ratedWearDays <= 0 || ratedWearDays > 365))
+		|| !Number.isSafeInteger(minSamples) || Number(minSamples) <= 0 || Number(minSamples) > 100
+		|| !['finish_by', 'start_by', 'none'].includes(String(expiryRule))
+		|| !['hard', 'soft'].includes(String(expiryStrictness))
 		|| (containsProductId !== null && (!Number.isSafeInteger(containsProductId) || containsProductId <= 0))
 		|| (gtin !== null && !isValidGtin(gtin))) {
 		return context.json({ error: 'invalid_product' }, 400)
@@ -316,10 +335,17 @@ app.post('/api/products', async (context) => {
 
 	try {
 		const product = await context.env.DB.prepare(`
-			INSERT INTO products (category_id, manufacturer, name, gtin, contains_product_id, contains_qty, origin)
-			VALUES (?, ?, ?, ?, ?, ?, 'custom')
-			RETURNING id, category_id, manufacturer, name, gtin, contains_product_id, contains_qty
-		`).bind(Number(categoryId), manufacturer, name, gtin, containsProductId, Number(containsQty)).first<{
+			INSERT INTO products (
+				category_id, manufacturer, name, gtin, contains_product_id, contains_qty,
+				rated_wear_days, min_samples, expiry_rule, expiry_strictness, origin
+			)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'custom')
+			RETURNING id, category_id, manufacturer, name, gtin, contains_product_id, contains_qty,
+				rated_wear_days, min_samples, expiry_rule, expiry_strictness
+		`).bind(
+			Number(categoryId), manufacturer, name, gtin, containsProductId, Number(containsQty),
+			ratedWearDays, Number(minSamples), String(expiryRule), String(expiryStrictness),
+		).first<{
 			id: number
 			category_id: number
 			manufacturer: string
@@ -327,6 +353,10 @@ app.post('/api/products', async (context) => {
 			gtin: string | null
 			contains_product_id: number | null
 			contains_qty: number | null
+			rated_wear_days: number | null
+			min_samples: number
+			expiry_rule: 'finish_by' | 'start_by' | 'none'
+			expiry_strictness: 'hard' | 'soft'
 		}>()
 		if (!product) return context.json({ error: 'product_unavailable' }, 503)
 		return context.json({ product }, 201)

@@ -50,6 +50,10 @@ type Product = {
   gtin: string | null
   contains_product_id: number | null
   contains_qty: number | null
+  rated_wear_days: number | null
+  min_samples: number
+  expiry_rule: 'finish_by' | 'start_by' | 'none'
+  expiry_strictness: 'hard' | 'soft'
 }
 
 type InventoryPackage = {
@@ -88,6 +92,9 @@ const manufacturer = ref('')
 const productName = ref('')
 const containsQty = ref('1')
 const containsProductId = ref('')
+const ratedWearDays = ref('')
+const expiryRule = ref<'finish_by' | 'start_by' | 'none'>('finish_by')
+const expiryStrictness = ref<'hard' | 'soft'>('hard')
 const receiptLot = ref('')
 const receiptSerial = ref('')
 const receiptExpiry = ref('')
@@ -223,6 +230,9 @@ async function handleBarcodeDetected(result: BarcodeParseResult, mode: 'receive'
   productName.value = ''
   containsQty.value = '1'
   containsProductId.value = ''
+  ratedWearDays.value = ''
+  expiryRule.value = 'finish_by'
+  expiryStrictness.value = 'hard'
   if (result.kind === 'gs1' && result.fields.gtin) {
     try {
       const response = await fetch('/api/products')
@@ -381,6 +391,10 @@ async function saveReceipt() {
           gtin: scannedBarcode.value.kind === 'gs1' ? scannedBarcode.value.fields.gtin : undefined,
           containsQty: Number(containsQty.value),
           containsProductId: containsProductId.value ? Number(containsProductId.value) : undefined,
+          ratedWearDays: ratedWearDays.value ? Number(ratedWearDays.value) : undefined,
+          minSamples: 3,
+          expiryRule: expiryRule.value,
+          expiryStrictness: expiryStrictness.value,
         }),
       })
       if (productResponse.status === 401) {
@@ -690,6 +704,27 @@ onMounted(loadDashboard)
                 </option>
               </select>
             </template>
+            <div v-else class="receipt-field-grid">
+              <div>
+                <label for="receipt-rated-wear">Rated wear (days)</label>
+                <input id="receipt-rated-wear" v-model="ratedWearDays" type="number" min="1" max="365" />
+              </div>
+              <div>
+                <label for="receipt-expiry-rule">Expiry basis</label>
+                <select id="receipt-expiry-rule" v-model="expiryRule">
+                  <option value="finish_by">Finish by expiry</option>
+                  <option value="start_by">Start by expiry</option>
+                  <option value="none">No expiry constraint</option>
+                </select>
+              </div>
+              <div>
+                <label for="receipt-expiry-strictness">Expiry handling</label>
+                <select id="receipt-expiry-strictness" v-model="expiryStrictness">
+                  <option value="hard">Hard deadline</option>
+                  <option value="soft">Soft preference</option>
+                </select>
+              </div>
+            </div>
           </template>
 
           <div class="receipt-field-grid">

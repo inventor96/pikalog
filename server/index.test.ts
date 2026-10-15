@@ -9,6 +9,10 @@ type FakeProduct = {
 	gtin: string | null
 	contains_product_id: number | null
 	contains_qty: number | null
+	rated_wear_days: number | null
+	min_samples: number
+	expiry_rule: 'finish_by' | 'start_by' | 'none'
+	expiry_strictness: 'hard' | 'soft'
 }
 
 type FakePackage = {
@@ -164,6 +168,10 @@ function createDatabase() {
 							gtin: values[3] === null ? null : String(values[3]),
 							contains_product_id: values[4] === null ? null : Number(values[4]),
 							contains_qty: values[5] === null ? null : Number(values[5]),
+							rated_wear_days: values[6] === null ? null : Number(values[6]),
+							min_samples: Number(values[7]),
+							expiry_rule: values[8] as FakeProduct['expiry_rule'],
+							expiry_strictness: values[9] as FakeProduct['expiry_strictness'],
 						}
 						products.push(product)
 						return product as T
@@ -566,9 +574,40 @@ describe('Worker authentication routes', () => {
 		const unitResponse = await app.request('/api/products', {
 			method: 'POST',
 			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
-			body: JSON.stringify({ categoryId: 1, manufacturer: 'Acme', name: 'Sensor', gtin: '00036000291452', containsQty: 1 }),
+			body: JSON.stringify({
+				categoryId: 1,
+				manufacturer: 'Acme',
+				name: 'Sensor',
+				gtin: '00036000291452',
+				containsQty: 1,
+				ratedWearDays: 10,
+				minSamples: 5,
+				expiryRule: 'start_by',
+				expiryStrictness: 'soft',
+			}),
 		}, env)
-		const unitData = await unitResponse.json() as { product: { id: number } }
+		const unitData = await unitResponse.json() as { product: {
+			id: number
+			rated_wear_days: number
+			min_samples: number
+			expiry_rule: string
+			expiry_strictness: string
+		} }
+		expect(unitData.product).toMatchObject({
+			rated_wear_days: 10,
+			min_samples: 5,
+			expiry_rule: 'start_by',
+			expiry_strictness: 'soft',
+		})
+		const productListResponse = await app.request('/api/products', { headers: { Cookie: cookie } }, env)
+		const productList = await productListResponse.json() as { products: Array<Record<string, unknown>> }
+		expect(productList.products[0]).toMatchObject(unitData.product)
+		const invalidSettingsResponse = await app.request('/api/products', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ categoryId: 1, manufacturer: 'Acme', name: 'Invalid sensor', ratedWearDays: 0 }),
+		}, env)
+		expect(invalidSettingsResponse.status).toBe(400)
 		const packResponse = await app.request('/api/products', {
 			method: 'POST',
 			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
