@@ -169,4 +169,51 @@ describe('calculateSupplyForecast', () => {
 			'Some units lack both rated wear and enough completed samples for a duration estimate.',
 		)
 	})
+
+	it('plans projected hard-expiry units from their estimated arrival date', () => {
+		const [forecast] = calculateSupplyForecast({
+			today: '2026-10-14',
+			products,
+			packages: [],
+			events: [],
+			durationStatistics: [],
+			projectedReceipts: [{
+				productId: 1,
+				arrivalOn: '2026-10-20',
+				expiry: '2026-10-30',
+				quantity: 1,
+				intervalDays: 30,
+			}],
+		})
+
+		expect(forecast).toMatchObject({
+			projectedReceipts: [{
+				productName: 'Instinct',
+				arrivalOn: '2026-10-20',
+				expiry: '2026-10-30',
+				quantity: 1,
+			}],
+			wasteForecast: { preferred: 1, tolerated: 0 },
+			stockDays: 0,
+		})
+	})
+
+	it('reports quarterly over-supply from inferred arrival cadence', () => {
+		const forecast = calculateSupplyForecast({
+			today: '2026-10-14',
+			products,
+			packages: [],
+			events: [],
+			durationStatistics: [],
+			projectedReceipts: [{
+				productId: 1,
+				arrivalOn: '2026-11-13',
+				expiry: null,
+				quantity: 5,
+				intervalDays: 30,
+			}],
+		})[0]!
+
+		expect(forecast.surplusPerQuarter).toBe(6)
+	})
 })

@@ -50,9 +50,11 @@ function createDatabase() {
 	const products: FakeProduct[] = []
 	const packages: FakePackage[] = []
 	const events: FakeEvent[] = []
+	const settings = new Map<string, string>()
 	const sessions = new Map<string, { last_seen_at: number; expires_at: number }>()
 	return {
 		sessions,
+		settings,
 		products,
 		packages,
 		events,
@@ -68,6 +70,9 @@ function createDatabase() {
 					return values
 				},
 				async run() {
+					if (query.includes('INSERT INTO settings')) {
+						settings.set('include_projected_receipts', String(values[0]))
+					}
 					if (query.includes('DELETE FROM auth_login_attempts WHERE client_key')) {
 						attempts = 0
 						lockLevel = 0
@@ -103,6 +108,10 @@ function createDatabase() {
 					return { success: true }
 				},
 				async first<T>() {
+					if (query.includes('SELECT value FROM settings')) {
+						const value = settings.get(String(values[0]))
+						return value === undefined ? null : { value } as T
+					}
 					if (query.includes('FROM products JOIN categories') && query.includes('WHERE products.gtin = ?')) {
 						const product = products.find((item) => item.gtin === String(values[0]))
 						if (!product) return null
@@ -272,6 +281,8 @@ function createDatabase() {
 									product_name: product.name,
 									gtin: product.gtin,
 									contains_qty: product.contains_qty,
+								contains_product_id: product.contains_product_id,
+								units_received: product.contains_qty ?? 1,
 									units_remaining: Math.max(0, (product.contains_qty ?? 1)
 										+ events.filter((event) => event.package_id === pkg.id && event.type === 'adjusted').reduce((sum, event) => sum + event.qty, 0)
 										- events.filter((event) => event.package_id === pkg.id && (event.type === 'unit_started' || event.type === 'discarded')).reduce((sum, event) => sum + event.qty, 0)),
@@ -448,6 +459,86 @@ describe('Worker authentication routes', () => {
 		expect(response.headers.get('x-content-type-options')).toBe('nosniff')
 		expect(response.headers.get('x-frame-options')).toBe('DENY')
 		expect(response.headers.get('cache-control')).toBe('no-store')
+	})
+
+	it('projects linked-product receipts and persists the projection toggle', async () => {
+		const env = createEnv({ password: 'household passphrase' })
+		const cookie = await authenticatedCookie(env)
+		const unitResponse = await app.request('/api/products', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				categoryId: 1,
+				manufacturer: 'Acme',
+				name: 'Sensor',
+				gtin: '00036000291452',
+				ratedWearDays: 10,
+			}),
+		}, env)
+		const unit = await unitResponse.json() as { product: { id: number } }
+		const packResponse = await app.request('/api/products', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ categoryId: 1, manufacturer: 'Acme', name: 'Sensor box', containsProductId: unit.product.id, containsQty: 2 }),
+		}, env)
+		const pack = await packResponse.json() as { product: { id: number } }
+		for (const [receivedOn, expiry] of [
+			['2026-08-01', '2026-11-09'],
+			['2026-09-01', '2026-12-10'],
+		]) {
+			const receiptResponse = await app.request('/api/receipts', {
+				method: 'POST',
+				headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+				body: JSON.stringify({ productId: pack.product.id, receivedOn, expiry }),
+			}, env)
+			expect(receiptResponse.status).toBe(201)
+		}
+
+		const settingsResponse = await app.request('/api/settings', { headers: { Cookie: cookie } }, env)
+		const settings = await settingsResponse.json() as { includeProjectedReceipts: boolean }
+		const forecastResponse = await app.request('/api/forecast?today=2026-09-15', { headers: { Cookie: cookie } }, env)
+		const forecast = await forecastResponse.json() as {
+			includeProjectedReceipts: boolean
+			categories: Array<{
+				projectedReceipts: Array<Record<string, unknown>>
+				surplusPerQuarter: number | null
+			}>
+		}
+
+		expect(settings.includeProjectedReceipts).toBe(true)
+		expect(forecast.includeProjectedReceipts).toBe(true)
+		expect(forecast.categories[0]?.projectedReceipts[0]).toMatchObject({
+			productName: 'Sensor',
+			arrivalOn: '2026-10-02',
+			expiry: '2027-01-10',
+			quantity: 2,
+		})
+		expect(forecast.categories[0]?.surplusPerQuarter).toBeCloseTo(-3.19, 2)
+
+		const disableResponse = await app.request('/api/settings', {
+			method: 'PUT',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ includeProjectedReceipts: false }),
+		}, env)
+		const disabledForecastResponse = await app.request('/api/forecast?today=2026-09-15', { headers: { Cookie: cookie } }, env)
+		const disabledForecast = await disabledForecastResponse.json() as {
+			includeProjectedReceipts: boolean
+			categories: Array<{
+				projectedReceipts: Array<Record<string, unknown>>
+				surplusPerQuarter: number | null
+			}>
+		}
+		const invalidSettingResponse = await app.request('/api/settings', {
+			method: 'PUT',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ includeProjectedReceipts: 'false' }),
+		}, env)
+
+		expect(disableResponse.status).toBe(200)
+		expect(disabledForecast.includeProjectedReceipts).toBe(false)
+		expect(disabledForecast.categories[0]?.projectedReceipts).toEqual([])
+		expect(disabledForecast.categories[0]?.surplusPerQuarter).toBeNull()
+		expect(invalidSettingResponse.status).toBe(400)
 	})
 
 	it('creates a custom product and records a receipt in the inventory ledger', async () => {

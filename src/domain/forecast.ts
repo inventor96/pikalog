@@ -1,4 +1,5 @@
 import { plan } from './planner'
+import type { ProjectedReceipt } from './receipts'
 import type { DurationLedgerEvent, ProductDurationStatistics } from './statistics'
 
 export type ForecastProduct = {
@@ -31,6 +32,13 @@ export type CategoryForecast = {
 	stockUnits: number
 	activeUnits: number
 	expiredUnits: number
+	surplusPerQuarter: number | null
+	projectedReceipts: Array<{
+		productName: string
+		arrivalOn: string
+		expiry: string | null
+		quantity: number
+	}>
 	stockDays: number | null
 	runOutDate: string | null
 	nextPick: 'filler' | 'hard' | 'none'
@@ -97,6 +105,7 @@ export function calculateSupplyForecast(input: {
 	packages: readonly ForecastPackage[]
 	events: readonly ForecastEvent[]
 	durationStatistics: readonly ProductDurationStatistics[]
+	projectedReceipts?: readonly ProjectedReceipt[]
 }): CategoryForecast[] {
 	const today = dayNumber(input.today)
 	const productById = new Map(input.products.map((product) => [product.id, product]))
@@ -106,17 +115,22 @@ export function calculateSupplyForecast(input: {
 		name: string
 		stock: StockUnit[]
 		active: ActiveUnit[]
+		projected: ProjectedReceipt[]
 	}>()
 	const getCategory = (product: ForecastProduct) => {
 		let category = categories.get(product.categoryId)
 		if (!category) {
-			category = { name: product.categoryName, stock: [], active: [] }
+			category = { name: product.categoryName, stock: [], active: [], projected: [] }
 			categories.set(product.categoryId, category)
 		}
 		return category
 	}
 
 	for (const unit of activeUnits) getCategory(unit.product).active.push(unit)
+	for (const projected of input.projectedReceipts ?? []) {
+		const product = productById.get(projected.productId)
+		if (product) getCategory(product).projected.push(projected)
+	}
 	for (const inventoryPackage of input.packages) {
 		const packageProduct = productById.get(inventoryPackage.productId)
 		const product = packageProduct?.containsProductId === null
@@ -136,6 +150,10 @@ export function calculateSupplyForecast(input: {
 		const allProducts = [
 			...category.stock.map((unit) => unit.product),
 			...category.active.map((unit) => unit.product),
+			...category.projected.flatMap((receipt) => {
+				const product = productById.get(receipt.productId)
+				return product ? Array.from({ length: receipt.quantity }, () => product) : []
+			}),
 		]
 		const durations = allProducts
 			.map((product) => effectiveWearDays(product, statistics))
@@ -158,6 +176,29 @@ export function calculateSupplyForecast(input: {
 			sum + Math.max(0, unit.wearDays - (today - unit.startedDay)), 0)
 		const stockDaysBeforeExpiry = unitsWithWear.reduce((sum, unit) => sum + unit.wearDays, 0)
 			+ activeRemainingDays
+		const projectedWithWear = category.projected.flatMap((receipt) => {
+			const product = productById.get(receipt.productId)
+			const wearDays = product ? effectiveWearDays(product, statistics) : null
+			if (!product || wearDays === null) return []
+			return [{ receipt, product, wearDays, expiryDay: receipt.expiry ? dayNumber(receipt.expiry) : null }]
+		})
+		const projectedStockDays = projectedWithWear.reduce((sum, projection) => {
+			const arrivalDay = dayNumber(projection.receipt.arrivalOn)
+			if (projection.expiryDay !== null && projection.expiryDay < arrivalDay) return sum
+			if (projection.product.expiryStrictness === 'soft'
+				&& projection.product.expiryRule === 'finish_by'
+				&& projection.expiryDay !== null
+				&& projection.expiryDay < arrivalDay + projection.wearDays) return sum
+			return sum + projection.receipt.quantity * projection.wearDays
+		}, 0)
+		const receiptCadence = new Map<number, ProjectedReceipt>()
+		for (const receipt of category.projected) {
+			if (!receiptCadence.has(receipt.productId)) receiptCadence.set(receipt.productId, receipt)
+		}
+		const receiptsPerQuarter = receiptCadence.size
+			? [...receiptCadence.values()].reduce((sum, receipt) =>
+				sum + receipt.quantity * 90 / receipt.intervalDays, 0)
+			: null
 		const stockUnits = stock.length
 		const nextUseDay = category.active.length
 			? Math.max(today, ...activeWithWear.map((unit) => unit.startedDay + unit.wearDays))
@@ -184,6 +225,21 @@ export function calculateSupplyForecast(input: {
 				toleratedDeadline: unit.expiryDay,
 			})
 		}
+		for (const projection of projectedWithWear) {
+			if (projection.product.expiryStrictness !== 'hard'
+				|| projection.product.expiryRule === 'none'
+				|| projection.expiryDay === null) continue
+			const availableOn = Math.max(nextUseDay, dayNumber(projection.receipt.arrivalOn))
+			for (let count = 0; count < projection.receipt.quantity; count += 1) {
+				hardUnits.push({
+					availableOn,
+					preferredDeadline: projection.product.expiryRule === 'finish_by'
+						? projection.expiryDay - projection.wearDays
+						: projection.expiryDay,
+					toleratedDeadline: projection.expiryDay,
+				})
+			}
+		}
 		const usableFillers = fillerUnits.filter((unit) =>
 			unit.expiryDay === null
 			|| unit.product.expiryRule !== 'finish_by'
@@ -198,6 +254,8 @@ export function calculateSupplyForecast(input: {
 				hardUnits,
 				fillerStock: usableFillers.length,
 				constrainBy: 'preferred',
+				receiptsPerQuarter: receiptsPerQuarter ?? undefined,
+				consumptionPerQuarter: fallbackWearDays === null ? undefined : 90 / fallbackWearDays,
 			})
 		const chosenFiller = usableFillers.sort((first, second) =>
 			(first.expiryDay ?? Number.MAX_SAFE_INTEGER) - (second.expiryDay ?? Number.MAX_SAFE_INTEGER)
@@ -219,10 +277,15 @@ export function calculateSupplyForecast(input: {
 		const preferredWaste = planner?.wasteForecast.preferred ?? 0
 		const stockDays = fallbackWearDays === null || hasUnknownWear
 			? null
-			: Math.max(0, stockDaysBeforeExpiry - preferredWaste * fallbackWearDays)
+			: Math.max(0, stockDaysBeforeExpiry + projectedStockDays - preferredWaste * fallbackWearDays)
 		const assumptions = planner?.assumptions ?? []
 		if (category.active.length) assumptions.push('Run-out includes estimated remaining wear for active units.')
-		if (stockUnits) assumptions.push('Projected receipts are not included in this estimate.')
+		if (category.projected.length) {
+			assumptions.push('Projected arrivals use median historical intervals, quantities, and observed shelf life; they are not confirmed supply.')
+			if (category.projected.some((receipt) => productById.get(receipt.productId)?.expiryStrictness === 'soft')) {
+				assumptions.push('Future soft-expiry receipts are included in stock days but not safe filler slots.')
+			}
+		}
 		if (expiredUnits) assumptions.push('Expired stock is excluded from stock days and pick recommendations.')
 		if (hasUnknownWear) {
 			assumptions.push('Some units lack both rated wear and enough completed samples for a duration estimate.')
@@ -240,6 +303,13 @@ export function calculateSupplyForecast(input: {
 			stockUnits,
 			activeUnits: category.active.length,
 			expiredUnits,
+			surplusPerQuarter: planner?.surplusPerQuarter ?? null,
+			projectedReceipts: category.projected.map((receipt) => ({
+				productName: productById.get(receipt.productId)?.name ?? 'Unknown product',
+				arrivalOn: receipt.arrivalOn,
+				expiry: receipt.expiry,
+				quantity: receipt.quantity,
+			})),
 			stockDays,
 			runOutDate: stockDays === null ? null : isoDate(today + Math.ceil(stockDays)),
 			nextPick,

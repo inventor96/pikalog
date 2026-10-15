@@ -47,6 +47,13 @@ type CategoryForecast = {
   stockUnits: number
   activeUnits: number
   expiredUnits: number
+  surplusPerQuarter: number | null
+  projectedReceipts: Array<{
+    productName: string
+    arrivalOn: string
+    expiry: string | null
+    quantity: number
+  }>
   stockDays: number | null
   runOutDate: string | null
   nextPick: 'filler' | 'hard' | 'none'
@@ -94,7 +101,9 @@ const packages = ref<InventoryPackage[]>([])
 const activityEvents = ref<ActivityEvent[]>([])
 const durationStats = ref<DurationStatistic[]>([])
 const categoryForecasts = ref<CategoryForecast[]>([])
+const includeProjectedReceipts = ref(true)
 const isLoading = ref(false)
+const isSavingProjectionSetting = ref(false)
 const errorMessage = ref('')
 const scanNotice = ref('')
 const refreshedAt = ref('')
@@ -136,6 +145,7 @@ const earliestRunOut = computed(() => categoryForecasts.value
 const nextPickForecast = computed(() => categoryForecasts.value
   .filter((forecast) => forecast.nextPickProduct)
   .sort((first, second) => (first.runOutDate ?? '9999').localeCompare(second.runOutDate ?? '9999'))[0] ?? null)
+const hasProjectedReceipts = computed(() => categoryForecasts.value.some((forecast) => forecast.projectedReceipts.length > 0))
 const containedProducts = computed(() => products.value.filter((product) =>
   product.category_id === Number(categoryId.value) && product.contains_product_id === null,
 ))
@@ -184,7 +194,7 @@ async function loadDashboard() {
       overviewResponse.json() as Promise<Overview>,
       inventoryResponse.json() as Promise<{ packages: InventoryPackage[] }>,
       activityResponse.json() as Promise<{ events: ActivityEvent[]; durationStats: DurationStatistic[] }>,
-      forecastResponse.json() as Promise<{ categories: CategoryForecast[] }>,
+      forecastResponse.json() as Promise<{ categories: CategoryForecast[]; includeProjectedReceipts: boolean }>,
     ])
     categories.value = categoryData.categories
     products.value = productData.products
@@ -193,6 +203,7 @@ async function loadDashboard() {
     activityEvents.value = activityData.events
     durationStats.value = activityData.durationStats
     categoryForecasts.value = forecastData.categories
+    includeProjectedReceipts.value = forecastData.includeProjectedReceipts
     if (!categoryId.value && categories.value[0]) categoryId.value = String(categories.value[0].id)
     refreshedAt.value = new Intl.DateTimeFormat(undefined, {
       hour: 'numeric',
@@ -202,6 +213,31 @@ async function loadDashboard() {
     errorMessage.value = 'The inventory service is unavailable. Try refreshing.'
   } finally {
     isLoading.value = false
+  }
+}
+
+async function saveProjectionSetting(event: Event) {
+  const checkbox = event.target as HTMLInputElement
+  const previousValue = includeProjectedReceipts.value
+  isSavingProjectionSetting.value = true
+  try {
+    const response = await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ includeProjectedReceipts: checkbox.checked }),
+    })
+    if (response.status === 401) {
+      await router.replace({ name: 'login' })
+      return
+    }
+    if (!response.ok) throw new Error('Could not save the projection setting.')
+    includeProjectedReceipts.value = checkbox.checked
+    await loadDashboard()
+  } catch {
+    checkbox.checked = previousValue
+    errorMessage.value = 'Could not save the projection setting. Try again.'
+  } finally {
+    isSavingProjectionSetting.value = false
   }
 }
 
@@ -666,7 +702,15 @@ onMounted(loadDashboard)
           <p class="eyebrow">EXPIRY-AWARE FORECAST</p>
           <h2>Run-out outlook</h2>
         </div>
-        <span class="section-count">ESTIMATE</span>
+        <label class="projection-toggle">
+          <input
+            type="checkbox"
+            :checked="includeProjectedReceipts"
+            :disabled="isSavingProjectionSetting"
+            @change="saveProjectionSetting"
+          />
+          <span>Include projected receipts</span>
+        </label>
       </div>
       <div v-if="categoryForecasts.length" class="forecast-list">
         <article v-for="forecast in categoryForecasts" :key="forecast.categoryId" class="forecast-row">
@@ -686,13 +730,32 @@ onMounted(loadDashboard)
             <strong>{{ forecast.wasteForecast.preferred }} / {{ forecast.wasteForecast.tolerated }}</strong>
             <span>preferred / tolerated waste</span>
           </div>
+          <div class="forecast-measure">
+            <strong>{{ forecast.surplusPerQuarter === null ? '—' : forecast.surplusPerQuarter.toFixed(1) }}</strong>
+            <span>
+              {{ forecast.wasteForecast.preferred > 0 && forecast.fillerSlotsSafe === 0 && (forecast.surplusPerQuarter ?? 0) > 0
+                ? 'Supply outpaces use per quarter'
+                : 'estimated surplus units per quarter' }}
+            </span>
+          </div>
+          <div v-if="forecast.projectedReceipts.length" class="projected-receipt-list">
+            <span class="projected-receipt-label">ESTIMATED ARRIVALS</span>
+            <span v-for="receipt in forecast.projectedReceipts" :key="`${receipt.productName}-${receipt.arrivalOn}`">
+              {{ receipt.arrivalOn }} · {{ receipt.productName }} × {{ receipt.quantity }}<template v-if="receipt.expiry"> · expiry {{ receipt.expiry }}</template>
+            </span>
+          </div>
           <ul v-if="forecast.assumptions.length || forecast.expiredUnits" class="forecast-assumptions">
             <li v-if="forecast.expiredUnits">{{ forecast.expiredUnits }} expired units excluded</li>
             <li v-for="assumption in forecast.assumptions" :key="assumption">{{ assumption }}</li>
           </ul>
         </article>
       </div>
-      <p v-else class="activity-note">Receive stock to see run-out and expiry-aware pick estimates.</p>
+      <p v-if="!categoryForecasts.length" class="activity-note">
+        Receive stock to see run-out and expiry-aware pick estimates.
+      </p>
+      <p v-else-if="includeProjectedReceipts && !hasProjectedReceipts" class="activity-note">
+        Projected receipts need at least two distinct receipt dates per product.
+      </p>
     </section>
 
     <footer class="disclaimer">

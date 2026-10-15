@@ -109,7 +109,7 @@ export function plan(input: PlannerInput): PlannerResult {
 		surplusPerQuarter,
 		assumptions: [
 			'Uses the effective wear duration supplied by the caller.',
-			'Projected arrivals are excluded unless the caller adds them to hardUnits.',
+			'Projected arrival handling depends on what the caller includes in the schedule.',
 			surplusPerQuarter === null
 				? 'Supply surplus is unavailable until receipt and consumption rates are known.'
 				: 'Supply surplus is estimated from the receipt and consumption rates supplied by the caller.',

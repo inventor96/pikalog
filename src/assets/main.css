@@ -747,7 +747,7 @@
 
 .forecast-row {
   display: grid;
-  grid-template-columns: minmax(150px, 1.4fr) repeat(3, minmax(110px, 0.8fr));
+  grid-template-columns: minmax(150px, 1.4fr) repeat(4, minmax(110px, 0.8fr));
   gap: 12px 18px;
   align-items: center;
   border-bottom: 1px solid var(--color-line);
@@ -784,6 +784,42 @@
   color: var(--color-ink-faint);
   font-size: 10px;
   line-height: 1.45;
+}
+
+.projection-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-ink-soft);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.projection-toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--color-green);
+}
+
+.projection-toggle input:disabled {
+  cursor: wait;
+}
+
+.projected-receipt-list {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 5px;
+  border-top: 1px solid var(--color-line);
+  padding-top: 9px;
+  color: var(--color-ink-soft);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.projected-receipt-label {
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 9px;
 }
 
 .duration-row {
@@ -1059,6 +1095,10 @@
   }
 
   .forecast-assumptions {
+    grid-column: 1;
+  }
+
+  .projected-receipt-list {
     grid-column: 1;
   }
 

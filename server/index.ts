@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { matchUnitScan, planPackageOpen, planUnitStart, type OpenPackageCandidate } from '../src/domain/ledger'
 import { calculateSupplyForecast, type ForecastEvent } from '../src/domain/forecast'
+import { estimateProjectedReceipts } from '../src/domain/receipts'
 import { calculateDurationStatistics, type DurationLedgerEvent } from '../src/domain/statistics'
 import {
 	createSession,
@@ -253,10 +254,30 @@ app.get('/api/activity', async (context) => {
 	})
 })
 
+app.get('/api/settings', async (context) => {
+	const setting = await context.env.DB.prepare('SELECT value FROM settings WHERE key = ?')
+		.bind('include_projected_receipts')
+		.first<{ value: string }>()
+	return context.json({ includeProjectedReceipts: setting?.value !== 'false' })
+})
+
+app.put('/api/settings', async (context) => {
+	const body = await context.req.json<{ includeProjectedReceipts?: unknown }>().catch(() => null)
+	if (typeof body?.includeProjectedReceipts !== 'boolean') {
+		return context.json({ error: 'invalid_settings' }, 400)
+	}
+	const value = String(body.includeProjectedReceipts)
+	await context.env.DB.prepare(`
+		INSERT INTO settings (key, value) VALUES ('include_projected_receipts', ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value
+	`).bind(value).run()
+	return context.json({ includeProjectedReceipts: body.includeProjectedReceipts })
+})
+
 app.get('/api/forecast', async (context) => {
 	const requestedToday = context.req.query('today') ?? ''
 	const today = isIsoDate(requestedToday) ? requestedToday : new Date().toISOString().slice(0, 10)
-	const [productRows, packageRows, eventRows] = await Promise.all([
+	const [productRows, packageRows, eventRows, projectionSetting] = await Promise.all([
 		context.env.DB.prepare(`
 			SELECT products.id, products.category_id, categories.name AS category_name,
 				products.name, products.contains_product_id, products.rated_wear_days,
@@ -276,6 +297,7 @@ app.get('/api/forecast', async (context) => {
 		}>(),
 		context.env.DB.prepare(`
 			SELECT packages.id, packages.product_id, packages.expiry,
+				products.contains_product_id, products.contains_qty,
 				MAX(0, COALESCE(products.contains_qty, 1)
 					+ COALESCE((SELECT SUM(qty) FROM events AS adjusted
 						WHERE adjusted.package_id = packages.id AND adjusted.type = 'adjusted'), 0)
@@ -293,7 +315,10 @@ app.get('/api/forecast', async (context) => {
 			id: number
 			product_id: number
 			expiry: string | null
+			contains_product_id: number | null
+			contains_qty: number | null
 			units_remaining: number
+			units_received: number
 			received_on: string
 		}>(),
 		context.env.DB.prepare(`
@@ -311,6 +336,9 @@ app.get('/api/forecast', async (context) => {
 			JOIN categories ON categories.id = products.category_id
 			ORDER BY events.occurred_on, events.id
 		`).all<ForecastEvent & { productName: string }>(),
+		context.env.DB.prepare('SELECT value FROM settings WHERE key = ?')
+			.bind('include_projected_receipts')
+			.first<{ value: string }>(),
 	])
 	const products = productRows.results.map((product) => ({
 		id: product.id,
@@ -330,6 +358,25 @@ app.get('/api/forecast', async (context) => {
 		receivedOn: inventoryPackage.received_on,
 		unitsRemaining: inventoryPackage.units_remaining,
 	}))
+	const productById = new Map(products.map((product) => [product.id, product]))
+	const includeProjectedReceipts = projectionSetting?.value !== 'false'
+	const receiptHistory = packageRows.results.flatMap((inventoryPackage) => {
+		const packageProduct = productById.get(inventoryPackage.product_id)
+		const unitProduct = packageProduct?.containsProductId === null
+			? packageProduct
+			: packageProduct?.containsProductId === undefined
+				? undefined
+				: productById.get(packageProduct.containsProductId)
+		return unitProduct ? [{
+			productId: unitProduct.id,
+			receivedOn: inventoryPackage.received_on,
+			expiry: inventoryPackage.expiry,
+			quantity: inventoryPackage.units_received,
+		}] : []
+	})
+	const projectedReceipts = includeProjectedReceipts
+		? estimateProjectedReceipts(receiptHistory, today)
+		: []
 	const durationEvents = eventRows.results.filter(
 		(event): event is typeof event & { type: 'unit_started' | 'unit_ended' } =>
 			event.type === 'unit_started' || event.type === 'unit_ended',
@@ -337,12 +384,14 @@ app.get('/api/forecast', async (context) => {
 	const durationStatistics = calculateDurationStatistics(durationEvents)
 	return context.json({
 		today,
+		includeProjectedReceipts,
 		categories: calculateSupplyForecast({
 			today,
 			products,
 			packages,
 			events: durationEvents as ForecastEvent[],
 			durationStatistics,
+			projectedReceipts,
 		}),
 	})
 })
