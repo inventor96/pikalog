@@ -3,6 +3,7 @@ import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { matchUnitScan, planPackageOpen, planUnitStart, type OpenPackageCandidate } from '../src/domain/ledger'
 import { calculateSupplyForecast, type ForecastEvent } from '../src/domain/forecast'
 import { estimateProjectedReceipts } from '../src/domain/receipts'
+import { syncCatalog } from './catalog-sync'
 import { calculateDurationStatistics, type DurationLedgerEvent } from '../src/domain/statistics'
 import {
 	createSession,
@@ -274,6 +275,32 @@ app.put('/api/settings', async (context) => {
 	return context.json({ includeProjectedReceipts: body.includeProjectedReceipts })
 })
 
+app.get('/api/catalog/status', async (context) => {
+	const state = await context.env.DB.prepare(`
+		SELECT version, last_synced_at, last_status, last_error
+		FROM catalog_sync_state WHERE id = 1
+	`).first<{
+		version: string | null
+		last_synced_at: string | null
+		last_status: string | null
+		last_error: string | null
+	}>()
+	return context.json({
+		version: state?.version ?? null,
+		lastSyncedAt: state?.last_synced_at ?? null,
+		status: state?.last_status ?? 'not_synced',
+		lastError: state?.last_error ?? null,
+	})
+})
+
+app.post('/api/catalog/sync', async (context) => {
+	try {
+		return context.json(await syncCatalog(context.env.DB, context.env.CATALOG_BASE_URL))
+	} catch {
+		return context.json({ error: 'catalog_sync_failed' }, 502)
+	}
+})
+
 app.get('/api/forecast', async (context) => {
 	const requestedToday = context.req.query('today') ?? ''
 	const today = isIsoDate(requestedToday) ? requestedToday : new Date().toISOString().slice(0, 10)
@@ -298,6 +325,7 @@ app.get('/api/forecast', async (context) => {
 		context.env.DB.prepare(`
 			SELECT packages.id, packages.product_id, packages.expiry,
 				products.contains_product_id, products.contains_qty,
+				COALESCE(products.contains_qty, 1) AS units_received,
 				MAX(0, COALESCE(products.contains_qty, 1)
 					+ COALESCE((SELECT SUM(qty) FROM events AS adjusted
 						WHERE adjusted.package_id = packages.id AND adjusted.type = 'adjusted'), 0)
@@ -808,4 +836,10 @@ app.get('/api/inventory', async (context) => {
 	return context.json({ packages: results })
 })
 
-export default app
+const worker = Object.assign(app, {
+	scheduled(_controller: ScheduledController, env: Env, context: ExecutionContext) {
+		context.waitUntil(syncCatalog(env.DB, env.CATALOG_BASE_URL).then(() => undefined).catch(() => undefined))
+	},
+})
+
+export default worker

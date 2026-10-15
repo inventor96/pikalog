@@ -1,0 +1,22 @@
+[
+	{
+		"key": "cgm_sensor",
+		"name": "CGM sensor",
+		"overlapAllowed": false
+	},
+	{
+		"key": "infusion_set",
+		"name": "Infusion set",
+		"overlapAllowed": false
+	},
+	{
+		"key": "cartridge",
+		"name": "Cartridge",
+		"overlapAllowed": false
+	},
+	{
+		"key": "test_strip",
+		"name": "Test strip",
+		"overlapAllowed": false
+	}
+]

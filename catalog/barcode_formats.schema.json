@@ -1,0 +1,21 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"type": "array",
+	"items": {
+		"type": "object",
+		"additionalProperties": false,
+		"required": ["key", "productKey", "pattern", "fields", "sourceUrl", "verified"],
+		"properties": {
+			"key": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{1,99}$" },
+			"productKey": { "type": "string" },
+			"pattern": { "type": "string", "minLength": 1, "maxLength": 1000 },
+			"fields": {
+				"type": "object",
+				"minProperties": 1,
+				"additionalProperties": { "enum": ["gtin", "expiry", "lot", "serial"] }
+			},
+			"sourceUrl": { "type": "string", "pattern": "^https?://\\S+$", "maxLength": 2048 },
+			"verified": { "type": "boolean" }
+		}
+	}
+}

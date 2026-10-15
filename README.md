@@ -38,6 +38,8 @@ Fill in the password locally; do not commit it or reuse another service's creden
 
 The local Worker uses a local D1 database. Run `npm test` for the domain tests and `npm run build` for type-checking and a production build.
 
+Catalog data is validated against the bundled JSON schemas and manifest checksums with `npm run catalog:validate`. The Worker starts with the bundled catalog and checks the configured public catalog source daily; manual sync is available from the run-out outlook.
+
 ## Cloudflare deployment
 
 The Deploy to Cloudflare button creates a Git copy in your account, prompts for a household password, and provisions the configured D1 binding. Use at least 8 characters; 12 to 15 or more is strongly recommended. The deploy command applies D1 migrations before publishing the Worker and Vue assets. The repository must be public for the button to work.

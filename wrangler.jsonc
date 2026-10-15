@@ -20,6 +20,12 @@
 	"secrets": {
 		"required": ["PIKALOG_PASSWORD"]
 	},
+	"vars": {
+		"CATALOG_BASE_URL": "https://raw.githubusercontent.com/inventor96/pikalog/main/catalog"
+	},
+	"triggers": {
+		"crons": ["0 5 * * *"]
+	},
 	"observability": {
 		"enabled": true
 	},

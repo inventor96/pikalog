@@ -795,6 +795,45 @@
   cursor: pointer;
 }
 
+.forecast-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px 13px;
+}
+
+.catalog-status {
+  display: grid;
+  gap: 2px;
+  color: var(--color-ink-faint);
+  font-size: 9px;
+  text-align: right;
+}
+
+.catalog-status strong {
+  color: var(--color-ink-soft);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.catalog-sync-button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 5px;
+  background: var(--color-white);
+  color: var(--color-green-dark);
+  cursor: pointer;
+}
+
+.catalog-sync-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .projection-toggle input {
   width: 16px;
   height: 16px;
@@ -1092,6 +1131,14 @@
   .forecast-row {
     grid-template-columns: minmax(0, 1fr);
     gap: 10px;
+  }
+
+  .forecast-controls {
+    justify-content: flex-start;
+  }
+
+  .catalog-status {
+    text-align: left;
   }
 
   .forecast-assumptions {

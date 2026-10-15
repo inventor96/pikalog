@@ -17,6 +17,13 @@ type Overview = {
   eventCount: number
 }
 
+type CatalogStatus = {
+  version: string | null
+  lastSyncedAt: string | null
+  status: 'not_synced' | 'seeded' | 'success' | 'error' | string
+  lastError: string | null
+}
+
 type ActivityEvent = {
   id: number
   type: string
@@ -102,8 +109,10 @@ const activityEvents = ref<ActivityEvent[]>([])
 const durationStats = ref<DurationStatistic[]>([])
 const categoryForecasts = ref<CategoryForecast[]>([])
 const includeProjectedReceipts = ref(true)
+const catalogStatus = ref<CatalogStatus>({ version: null, lastSyncedAt: null, status: 'not_synced', lastError: null })
 const isLoading = ref(false)
 const isSavingProjectionSetting = ref(false)
+const isSyncingCatalog = ref(false)
 const errorMessage = ref('')
 const scanNotice = ref('')
 const refreshedAt = ref('')
@@ -172,29 +181,31 @@ async function loadDashboard() {
   errorMessage.value = ''
 
   try {
-    const [categoriesResponse, productsResponse, overviewResponse, inventoryResponse, activityResponse, forecastResponse] = await Promise.all([
+    const [categoriesResponse, productsResponse, overviewResponse, inventoryResponse, activityResponse, forecastResponse, catalogStatusResponse] = await Promise.all([
       fetch('/api/categories'),
       fetch('/api/products'),
       fetch('/api/overview'),
       fetch('/api/inventory'),
       fetch('/api/activity'),
       fetch(`/api/forecast?today=${todayIsoDate()}`),
+      fetch('/api/catalog/status'),
     ])
-    if (!categoriesResponse.ok || !productsResponse.ok || !overviewResponse.ok || !inventoryResponse.ok || !activityResponse.ok || !forecastResponse.ok) {
-      if ([categoriesResponse.status, productsResponse.status, overviewResponse.status, inventoryResponse.status, activityResponse.status, forecastResponse.status].includes(401)) {
+    if (!categoriesResponse.ok || !productsResponse.ok || !overviewResponse.ok || !inventoryResponse.ok || !activityResponse.ok || !forecastResponse.ok || !catalogStatusResponse.ok) {
+      if ([categoriesResponse.status, productsResponse.status, overviewResponse.status, inventoryResponse.status, activityResponse.status, forecastResponse.status, catalogStatusResponse.status].includes(401)) {
         await router.replace({ name: 'login' })
         return
       }
       throw new Error('Could not load the inventory.')
     }
 
-    const [categoryData, productData, overviewData, inventoryData, activityData, forecastData] = await Promise.all([
+    const [categoryData, productData, overviewData, inventoryData, activityData, forecastData, catalogStatusData] = await Promise.all([
       categoriesResponse.json() as Promise<{ categories: Category[] }>,
       productsResponse.json() as Promise<{ products: Product[] }>,
       overviewResponse.json() as Promise<Overview>,
       inventoryResponse.json() as Promise<{ packages: InventoryPackage[] }>,
       activityResponse.json() as Promise<{ events: ActivityEvent[]; durationStats: DurationStatistic[] }>,
       forecastResponse.json() as Promise<{ categories: CategoryForecast[]; includeProjectedReceipts: boolean }>,
+      catalogStatusResponse.json() as Promise<CatalogStatus>,
     ])
     categories.value = categoryData.categories
     products.value = productData.products
@@ -204,6 +215,7 @@ async function loadDashboard() {
     durationStats.value = activityData.durationStats
     categoryForecasts.value = forecastData.categories
     includeProjectedReceipts.value = forecastData.includeProjectedReceipts
+    catalogStatus.value = catalogStatusData
     if (!categoryId.value && categories.value[0]) categoryId.value = String(categories.value[0].id)
     refreshedAt.value = new Intl.DateTimeFormat(undefined, {
       hour: 'numeric',
@@ -238,6 +250,29 @@ async function saveProjectionSetting(event: Event) {
     errorMessage.value = 'Could not save the projection setting. Try again.'
   } finally {
     isSavingProjectionSetting.value = false
+  }
+}
+
+async function syncCatalogNow() {
+  isSyncingCatalog.value = true
+  try {
+    const response = await fetch('/api/catalog/sync', { method: 'POST' })
+    if (response.status === 401) {
+      await router.replace({ name: 'login' })
+      return
+    }
+    if (!response.ok) throw new Error('Catalog sync failed.')
+    await loadDashboard()
+  } catch {
+    errorMessage.value = 'Catalog sync failed. The last available catalog is still in use.'
+    try {
+      const response = await fetch('/api/catalog/status')
+      if (response.ok) catalogStatus.value = await response.json() as CatalogStatus
+    } catch {
+      return
+    }
+  } finally {
+    isSyncingCatalog.value = false
   }
 }
 
@@ -702,15 +737,37 @@ onMounted(loadDashboard)
           <p class="eyebrow">EXPIRY-AWARE FORECAST</p>
           <h2>Run-out outlook</h2>
         </div>
-        <label class="projection-toggle">
-          <input
-            type="checkbox"
-            :checked="includeProjectedReceipts"
-            :disabled="isSavingProjectionSetting"
-            @change="saveProjectionSetting"
-          />
-          <span>Include projected receipts</span>
-        </label>
+        <div class="forecast-controls">
+          <div class="catalog-status" role="status">
+            <strong>
+              {{ catalogStatus.status === 'error' && catalogStatus.lastError === 'catalog_schema_unsupported'
+                ? 'Update app to use catalog'
+                : catalogStatus.status === 'error' ? 'Catalog sync failed'
+                  : catalogStatus.version ? `Catalog ${catalogStatus.version}` : 'Bundled catalog' }}
+            </strong>
+            <span v-if="catalogStatus.lastSyncedAt">Synced {{ catalogStatus.lastSyncedAt.slice(0, 10) }}</span>
+            <span v-if="catalogStatus.lastError && catalogStatus.lastError !== 'catalog_schema_unsupported'">{{ catalogStatus.lastError }}</span>
+          </div>
+          <button
+            class="catalog-sync-button"
+            type="button"
+            :disabled="isSyncingCatalog"
+            aria-label="Sync catalog now"
+            title="Sync catalog now"
+            @click="syncCatalogNow"
+          >
+            <RefreshCw :size="15" :class="{ 'is-spinning': isSyncingCatalog }" aria-hidden="true" />
+          </button>
+          <label class="projection-toggle">
+            <input
+              type="checkbox"
+              :checked="includeProjectedReceipts"
+              :disabled="isSavingProjectionSetting"
+              @change="saveProjectionSetting"
+            />
+            <span>Include projected receipts</span>
+          </label>
+        </div>
       </div>
       <div v-if="categoryForecasts.length" class="forecast-list">
         <article v-for="forecast in categoryForecasts" :key="forecast.categoryId" class="forecast-row">
