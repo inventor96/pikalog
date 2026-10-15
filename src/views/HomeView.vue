@@ -6,38 +6,13 @@ import BarcodeScanner from '@/components/BarcodeScanner.vue'
 import PageLayout from '@/components/PageLayout.vue'
 import type { BarcodeParseResult } from '@/barcode/ingest'
 import { buildCatalogSuggestionUrl } from '@/domain/catalog-contribution'
+import { summarizeInventory } from '@/domain/inventory-summary'
 
 type Category = {
   id: number
   key: string
   name: string
   overlap_allowed: number
-}
-
-type Overview = {
-  packageCount: number
-}
-
-type CategoryForecast = {
-  categoryId: number
-  categoryName: string
-  stockUnits: number
-  activeUnits: number
-  expiredUnits: number
-  surplusPerQuarter: number | null
-  projectedReceipts: Array<{
-    productName: string
-    arrivalOn: string
-    expiry: string | null
-    quantity: number
-  }>
-  stockDays: number | null
-  runOutDate: string | null
-  nextPick: 'filler' | 'hard' | 'none'
-  nextPickProduct: string | null
-  fillerSlotsSafe: number
-  wasteForecast: { preferred: number; tolerated: number }
-  assumptions: string[]
 }
 
 type Product = {
@@ -73,9 +48,7 @@ type InventoryPackage = {
 
 const categories = ref<Category[]>([])
 const products = ref<Product[]>([])
-const overview = ref<Overview | null>(null)
 const packages = ref<InventoryPackage[]>([])
-const categoryForecasts = ref<CategoryForecast[]>([])
 const isLoading = ref(false)
 const errorMessage = ref('')
 const scanNotice = ref('')
@@ -109,13 +82,7 @@ function todayIsoDate(): string {
 const todayLabel = computed(() =>
   new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).format(new Date()),
 )
-const unitsOnHand = computed(() => packages.value.reduce((total, pkg) => total + pkg.units_remaining, 0))
-const earliestRunOut = computed(() => categoryForecasts.value
-  .filter((forecast) => forecast.runOutDate && forecast.stockDays !== null)
-  .sort((first, second) => first.runOutDate!.localeCompare(second.runOutDate!))[0] ?? null)
-const nextPickForecast = computed(() => categoryForecasts.value
-  .filter((forecast) => forecast.nextPickProduct)
-  .sort((first, second) => (first.runOutDate ?? '9999').localeCompare(second.runOutDate ?? '9999'))[0] ?? null)
+const inventorySummary = computed(() => summarizeInventory(packages.value, products.value))
 const containedProducts = computed(() => products.value.filter((product) =>
   product.category_id === Number(categoryId.value) && product.contains_product_id === null,
 ))
@@ -138,33 +105,27 @@ async function loadDashboard() {
   errorMessage.value = ''
 
   try {
-    const [categoriesResponse, productsResponse, overviewResponse, inventoryResponse, forecastResponse] = await Promise.all([
+    const [categoriesResponse, productsResponse, inventoryResponse] = await Promise.all([
       fetch('/api/categories'),
       fetch('/api/products'),
-      fetch('/api/overview'),
       fetch('/api/inventory'),
-      fetch(`/api/forecast?today=${todayIsoDate()}`),
     ])
-    if (!categoriesResponse.ok || !productsResponse.ok || !overviewResponse.ok || !inventoryResponse.ok || !forecastResponse.ok) {
-      if ([categoriesResponse.status, productsResponse.status, overviewResponse.status, inventoryResponse.status, forecastResponse.status].includes(401)) {
+    if (!categoriesResponse.ok || !productsResponse.ok || !inventoryResponse.ok) {
+      if ([categoriesResponse.status, productsResponse.status, inventoryResponse.status].includes(401)) {
         await router.replace({ name: 'login' })
         return
       }
       throw new Error('Could not load the inventory.')
     }
 
-    const [categoryData, productData, overviewData, inventoryData, forecastData] = await Promise.all([
+    const [categoryData, productData, inventoryData] = await Promise.all([
       categoriesResponse.json() as Promise<{ categories: Category[] }>,
       productsResponse.json() as Promise<{ products: Product[] }>,
-      overviewResponse.json() as Promise<Overview>,
       inventoryResponse.json() as Promise<{ packages: InventoryPackage[] }>,
-      forecastResponse.json() as Promise<{ categories: CategoryForecast[] }>,
     ])
     categories.value = categoryData.categories
     products.value = productData.products
-    overview.value = overviewData
     packages.value = inventoryData.packages
-    categoryForecasts.value = forecastData.categories
     if (!categoryId.value && categories.value[0]) categoryId.value = String(categories.value[0].id)
   } catch {
     errorMessage.value = 'The inventory service is unavailable. Try refreshing.'
@@ -459,39 +420,12 @@ onMounted(loadDashboard)
     </template>
     <p v-if="scanNotice" class="scan-notice" role="status">{{ scanNotice }}</p>
 
-    <section class="metrics-row" aria-label="Supply summary">
-      <div class="metric">
-        <div class="metric-label">UNITS ON HAND</div>
-        <div class="metric-value" :class="{ 'metric-value--pending': unitsOnHand === 0 }">{{ unitsOnHand }}</div>
-        <div class="metric-note">Across {{ packages.length }} received packages</div>
-      </div>
-      <div class="metric">
-        <div class="metric-label">RUN-OUT</div>
-        <div class="metric-value" :class="{ 'metric-value--pending': !earliestRunOut }">
-          {{ earliestRunOut?.runOutDate ?? '—' }}
-        </div>
-        <div class="metric-note">
-          {{ earliestRunOut ? `${earliestRunOut.categoryName} · ${Math.ceil(earliestRunOut.stockDays ?? 0)} estimated days` : 'Add rated wear or complete usage samples' }}
-        </div>
-      </div>
-      <div class="metric">
-        <div class="metric-label">NEXT PICK</div>
-        <div class="metric-value" :class="{ 'metric-value--pending': !nextPickForecast }">
-          {{ nextPickForecast?.nextPickProduct ?? '—' }}
-        </div>
-        <div class="metric-note">
-          {{ nextPickForecast ? `${nextPickForecast.categoryName} · ${nextPickForecast.nextPick === 'filler' ? `${nextPickForecast.fillerSlotsSafe} safe filler slots` : 'use before hard expiry'}` : 'No unexpired stock to recommend' }}
-        </div>
-      </div>
-    </section>
-
     <section id="inventory" class="ledger-section">
       <div class="section-heading">
         <div>
           <p class="eyebrow">CURRENT STOCK</p>
           <h2>Inventory</h2>
         </div>
-        <span class="section-count">{{ overview ? `${overview.packageCount} PACKAGES` : '— PACKAGES' }}</span>
       </div>
 
       <div v-if="packages.length === 0" class="empty-ledger">
@@ -505,24 +439,33 @@ onMounted(loadDashboard)
         </div>
         <span class="empty-code">LEDGER EMPTY</span>
       </div>
-      <div v-else class="inventory-list">
-        <article v-for="pkg in packages" :key="pkg.id" class="inventory-row">
-          <div class="inventory-product">
-            <strong>{{ pkg.product_name }}</strong>
-            <span>{{ pkg.manufacturer }} · {{ pkg.category_name }}</span>
-          </div>
-          <span class="inventory-quantity">{{ pkg.units_remaining }} / {{ pkg.contains_qty ?? 1 }} units</span>
-          <span class="inventory-expiry">{{ pkg.expiry ? `Use by ${pkg.expiry}` : 'No expiry recorded' }}</span>
-          <span class="inventory-meta">{{ pkg.lot ? `Lot ${pkg.lot}` : 'No lot' }}{{ pkg.serial ? ` · Serial ${pkg.serial}` : '' }} · received {{ pkg.received_on }}</span>
-          <button
-            v-if="!pkg.is_open"
-            class="inventory-open"
-            type="button"
-            :disabled="openingPackageId !== null"
-            @click="openPackage(pkg.id)"
-          >{{ openingPackageId === pkg.id ? 'Opening' : 'Open' }}</button>
-          <span v-else class="inventory-open-state">Opened</span>
-        </article>
+      <div v-else class="inventory-table-wrap">
+        <table class="inventory-table">
+          <thead>
+            <tr>
+              <th scope="col">Category / individual product</th>
+              <th scope="col">Items on hand</th>
+              <th scope="col">Available boxes</th>
+            </tr>
+          </thead>
+          <tbody v-for="category in inventorySummary" :key="category.categoryId ?? category.categoryName">
+            <tr class="inventory-category-row">
+              <th scope="row">{{ category.categoryName }}</th>
+              <td>{{ category.itemCount }}</td>
+              <td>{{ category.availableBoxCount }}</td>
+            </tr>
+            <template v-if="category.products.length > 1">
+              <tr v-for="product in category.products" :key="product.groupKey" class="inventory-product-row">
+                <th scope="row">
+                  <span>{{ product.manufacturer }} {{ product.productName }}</span>
+                  <small v-if="product.gtin">{{ product.gtin }}</small>
+                </th>
+                <td>{{ product.itemCount }}</td>
+                <td>{{ product.availableBoxCount }}</td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
       </div>
     </section>
 
