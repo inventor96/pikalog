@@ -7,6 +7,7 @@ type FakeProduct = {
 	manufacturer: string
 	name: string
 	gtin: string | null
+	contains_product_id: number | null
 	contains_qty: number | null
 }
 
@@ -17,6 +18,7 @@ type FakePackage = {
 	serial: string | null
 	expiry: string | null
 	raw_barcode: string | null
+	implicit?: number
 }
 
 type FakeEvent = {
@@ -96,6 +98,15 @@ function createDatabase() {
 					return { success: true }
 				},
 				async first<T>() {
+					if (query.includes('FROM products JOIN categories') && query.includes('WHERE products.gtin = ?')) {
+						const product = products.find((item) => item.gtin === String(values[0]))
+						if (!product) return null
+						return {
+							id: product.id,
+							category_id: product.category_id,
+							overlap_allowed: categories.find((item) => item.id === product.category_id)?.overlap_allowed ?? 0,
+						} as T
+					}
 					if (query.includes('FROM events AS started') && query.includes('active_package')) {
 						const product = products.find((item) => item.id === Number(values[0]))
 						const active = [...events].reverse().find((event) => {
@@ -150,7 +161,8 @@ function createDatabase() {
 							manufacturer: String(values[1]),
 							name: String(values[2]),
 							gtin: values[3] === null ? null : String(values[3]),
-							contains_qty: values[4] === null ? null : Number(values[4]),
+							contains_product_id: values[4] === null ? null : Number(values[4]),
+							contains_qty: values[5] === null ? null : Number(values[5]),
 						}
 						products.push(product)
 						return product as T
@@ -182,6 +194,28 @@ function createDatabase() {
 				},
 				async all<T>() {
 					if (query.includes('FROM categories')) return { results: categories as T[] }
+					if (query.includes('unit_serial FROM events')) {
+						return { results: events.filter((event) => event.unit_serial).map((event) => ({ unit_serial: event.unit_serial! })) as T[] }
+					}
+					if (query.includes('products.contains_product_id = ?')) {
+						return {
+							results: packages.flatMap((pkg) => {
+								const product = products.find((item) => item.id === pkg.product_id)
+								const received = events.find((event) => event.package_id === pkg.id && event.type === 'received')
+								if (!product || product.contains_product_id !== Number(values[0]) || !received) return []
+								const consumed = events.filter((event) => event.package_id === pkg.id
+									&& (event.type === 'unit_started' || event.type === 'discarded')).reduce((sum, event) => sum + event.qty, 0)
+								return [{
+									id: pkg.id,
+									containsProductId: product.contains_product_id,
+									lot: pkg.lot ?? undefined,
+									expiry: pkg.expiry ?? undefined,
+									receivedOn: received.occurred_on,
+									unitsRemaining: Math.max(0, (product.contains_qty ?? 1) - consumed),
+								}] as T[]
+							}),
+						}
+					}
 					if (query.includes('FROM products')) {
 						return {
 							results: products.map((product) => ({
@@ -202,6 +236,9 @@ function createDatabase() {
 									product_name: product.name,
 									gtin: product.gtin,
 									contains_qty: product.contains_qty,
+									units_remaining: Math.max(0, (product.contains_qty ?? 1)
+										+ events.filter((event) => event.package_id === pkg.id && event.type === 'adjusted').reduce((sum, event) => sum + event.qty, 0)
+										- events.filter((event) => event.package_id === pkg.id && (event.type === 'unit_started' || event.type === 'discarded')).reduce((sum, event) => sum + event.qty, 0)),
 									category_name: categories.find((category) => category.id === product.category_id)?.name,
 									received_on: received.occurred_on,
 									is_open: events.some((event) => event.package_id === pkg.id && event.type === 'opened') ? 1 : 0,
@@ -226,6 +263,7 @@ function createDatabase() {
 						serial: values[2] === null ? null : String(values[2]),
 						expiry: values[3] === null ? null : String(values[3]),
 						raw_barcode: values[4] === null ? null : String(values[4]),
+						implicit: statement.query.includes('VALUES (?, ?, ?, ?, ?, 1)') ? 1 : 0,
 					})
 				} else if (statement.query.includes('INSERT INTO events')) {
 					if (statement.query.includes("VALUES (last_insert_rowid(), 'received'")) {
@@ -237,6 +275,17 @@ function createDatabase() {
 						qty: 1,
 						occurred_on: String(values[0]),
 					})
+					} else if (statement.query.includes("VALUES (last_insert_rowid(), 'unit_started'")) {
+						const pkg = packages.at(-1)
+						if (pkg) events.push({
+							id: events.length + 1,
+							package_id: pkg.id,
+							type: 'unit_started',
+							qty: 1,
+							occurred_on: String(values[0]),
+							unit_serial: values[1] === null ? null : String(values[1]),
+							unit_expiry: values[2] === null ? null : String(values[2]),
+						})
 					} else {
 						events.push({
 							id: events.length + 1,
@@ -408,6 +457,7 @@ describe('Worker authentication routes', () => {
 			manufacturer: 'Acme',
 			product_name: 'Sensor pack',
 			contains_qty: 2,
+			units_remaining: 1,
 			lot: 'LOT-7',
 			serial: 'SERIAL-9',
 			expiry: '2028-12-31',
@@ -453,5 +503,79 @@ describe('Worker authentication routes', () => {
 		expect(invalidReceiptResponse.status).toBe(400)
 		expect(env.DB.packages).toHaveLength(2)
 		expect(env.DB.events).toHaveLength(7)
+	})
+
+	it('matches a unit scan to its linked pack and consumes one remaining unit', async () => {
+		const env = createEnv({ password: 'household passphrase' })
+		const cookie = await authenticatedCookie(env)
+		const unitResponse = await app.request('/api/products', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ categoryId: 1, manufacturer: 'Acme', name: 'Sensor', gtin: '00036000291452', containsQty: 1 }),
+		}, env)
+		const unitData = await unitResponse.json() as { product: { id: number } }
+		const packResponse = await app.request('/api/products', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				categoryId: 1,
+				manufacturer: 'Acme',
+				name: 'Sensor pack',
+				gtin: '09506000134352',
+				containsProductId: unitData.product.id,
+				containsQty: 2,
+			}),
+		}, env)
+		const packData = await packResponse.json() as { product: { id: number } }
+		await app.request('/api/receipts', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ productId: packData.product.id, lot: 'LOT-U', expiry: '2028-12-31', receivedOn: '2026-10-14' }),
+		}, env)
+
+		const startResponse = await app.request('/api/unit-scans', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				gtin: '00036000291452',
+				lot: 'LOT-U',
+				expiry: '2028-12-31',
+				serial: 'UNIT-4',
+				rawBarcode: '01000360002914521728123121UNIT-4',
+				occurredOn: '2026-10-15',
+			}),
+		}, env)
+		const startData = await startResponse.json() as { started: boolean; implicit: boolean; matchedBy: string }
+		const inventoryResponse = await app.request('/api/inventory', { headers: { Cookie: cookie } }, env)
+		const inventory = await inventoryResponse.json() as { packages: Array<Record<string, unknown>> }
+
+		expect(unitResponse.status).toBe(201)
+		expect(packResponse.status).toBe(201)
+		expect(startResponse.status).toBe(201)
+		expect(startData).toMatchObject({ started: true, implicit: false, matchedBy: 'lot_expiry' })
+		expect(env.DB.events.filter((event) => event.type === 'unit_started'))
+			.toMatchObject([{ type: 'unit_started', occurred_on: '2026-10-15' }])
+		expect(inventory.packages).toMatchObject([{ units_remaining: 1 }])
+	})
+
+	it('creates an implicit package when a unit scan has no eligible received pack', async () => {
+		const env = createEnv({ password: 'household passphrase' })
+		const cookie = await authenticatedCookie(env)
+		await app.request('/api/products', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ categoryId: 1, manufacturer: 'Acme', name: 'Sensor', gtin: '00036000291452', containsQty: 1 }),
+		}, env)
+		const response = await app.request('/api/unit-scans', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ gtin: '00036000291452', serial: 'UNIT-9', occurredOn: '2026-10-14' }),
+		}, env)
+		const result = await response.json() as { implicit: boolean; matchedBy: null }
+
+		expect(response.status).toBe(201)
+		expect(result).toMatchObject({ implicit: true, matchedBy: null })
+		expect(env.DB.packages).toMatchObject([{ implicit: 1, product_id: 1 }])
+		expect(env.DB.events).toMatchObject([{ type: 'unit_started', unit_serial: 'UNIT-9' }])
 	})
 })

@@ -24,6 +24,7 @@ type Product = {
   manufacturer: string
   name: string
   gtin: string | null
+  contains_product_id: number | null
   contains_qty: number | null
 }
 
@@ -37,12 +38,14 @@ type InventoryPackage = {
   product_name: string
   gtin: string | null
   contains_qty: number | null
+  units_remaining: number
   category_name: string
   received_on: string
   is_open: number
 }
 
 const categories = ref<Category[]>([])
+const products = ref<Product[]>([])
 const overview = ref<Overview | null>(null)
 const packages = ref<InventoryPackage[]>([])
 const isLoading = ref(false)
@@ -58,6 +61,7 @@ const categoryId = ref('')
 const manufacturer = ref('')
 const productName = ref('')
 const containsQty = ref('1')
+const containsProductId = ref('')
 const receiptLot = ref('')
 const receiptSerial = ref('')
 const receiptExpiry = ref('')
@@ -76,7 +80,10 @@ function todayIsoDate(): string {
 const todayLabel = computed(() =>
   new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).format(new Date()),
 )
-const unitsOnHand = computed(() => packages.value.reduce((total, pkg) => total + (pkg.contains_qty ?? 1), 0))
+const unitsOnHand = computed(() => packages.value.reduce((total, pkg) => total + pkg.units_remaining, 0))
+const containedProducts = computed(() => products.value.filter((product) =>
+  product.category_id === Number(categoryId.value) && product.contains_product_id === null,
+))
 const hasScanProblem = computed(() => {
   const result = scannedBarcode.value
   return result?.kind === 'invalid'
@@ -89,25 +96,28 @@ async function loadDashboard() {
   errorMessage.value = ''
 
   try {
-    const [categoriesResponse, overviewResponse, inventoryResponse] = await Promise.all([
+    const [categoriesResponse, productsResponse, overviewResponse, inventoryResponse] = await Promise.all([
       fetch('/api/categories'),
+      fetch('/api/products'),
       fetch('/api/overview'),
       fetch('/api/inventory'),
     ])
-    if (!categoriesResponse.ok || !overviewResponse.ok || !inventoryResponse.ok) {
-      if ([categoriesResponse.status, overviewResponse.status, inventoryResponse.status].includes(401)) {
+    if (!categoriesResponse.ok || !productsResponse.ok || !overviewResponse.ok || !inventoryResponse.ok) {
+      if ([categoriesResponse.status, productsResponse.status, overviewResponse.status, inventoryResponse.status].includes(401)) {
         await router.replace({ name: 'login' })
         return
       }
       throw new Error('Could not load the inventory.')
     }
 
-    const [categoryData, overviewData, inventoryData] = await Promise.all([
+    const [categoryData, productData, overviewData, inventoryData] = await Promise.all([
       categoriesResponse.json() as Promise<{ categories: Category[] }>,
+      productsResponse.json() as Promise<{ products: Product[] }>,
       overviewResponse.json() as Promise<Overview>,
       inventoryResponse.json() as Promise<{ packages: InventoryPackage[] }>,
     ])
     categories.value = categoryData.categories
+    products.value = productData.products
     overview.value = overviewData
     packages.value = inventoryData.packages
     if (!categoryId.value && categories.value[0]) categoryId.value = String(categories.value[0].id)
@@ -134,20 +144,25 @@ async function handleBarcodeDetected(result: BarcodeParseResult, mode: 'receive'
       scanNotice.value = 'This code does not identify a received package. Open the package from inventory instead.'
       return
     }
-    const productPackages = packages.value.filter((pkg) => pkg.gtin === result.fields.gtin && !pkg.is_open)
+    const productPackages = packages.value.filter((pkg) => pkg.gtin === result.fields.gtin)
     const identityMatches = productPackages.filter((pkg) => {
       if (result.fields.lot && result.fields.expiry) return pkg.lot === result.fields.lot && pkg.expiry === result.fields.expiry
       if (result.fields.expiry) return pkg.expiry === result.fields.expiry
       return true
     })
-    const target = [...identityMatches].sort((first, second) =>
+    const sortedMatches = [...identityMatches].sort((first, second) =>
       first.received_on.localeCompare(second.received_on) || first.id - second.id,
-    )[0]
-    if (!target) {
-      scanNotice.value = 'No unopened received package matches this barcode. Refresh inventory or choose a package below.'
+    )
+    const target = sortedMatches.find((pkg) => !pkg.is_open)
+    if (target) {
+      await openPackage(target.id)
       return
     }
-    await openPackage(target.id)
+    if (sortedMatches.some((pkg) => pkg.is_open)) {
+      scanNotice.value = 'This package is already open. Scan a unit barcode to start the next unit.'
+      return
+    }
+    await startUnitFromScan(result)
     return
   }
   if (categories.value.length === 0) await loadDashboard()
@@ -166,6 +181,7 @@ async function handleBarcodeDetected(result: BarcodeParseResult, mode: 'receive'
   manufacturer.value = ''
   productName.value = ''
   containsQty.value = '1'
+  containsProductId.value = ''
   if (result.kind === 'gs1' && result.fields.gtin) {
     try {
       const response = await fetch('/api/products')
@@ -183,6 +199,51 @@ async function handleBarcodeDetected(result: BarcodeParseResult, mode: 'receive'
     }
   }
   receiptDialogOpen.value = true
+}
+
+async function startUnitFromScan(result: Extract<BarcodeParseResult, { kind: 'gs1' }>) {
+  const gtin = result.fields.gtin
+  if (!gtin) {
+    scanNotice.value = 'This scan has no GTIN. Open a package from inventory instead.'
+    return
+  }
+
+  try {
+    const response = await fetch('/api/unit-scans', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        gtin,
+        lot: result.fields.lot,
+        expiry: result.fields.expiry,
+        serial: result.fields.serial,
+        rawBarcode: result.raw,
+        occurredOn: todayIsoDate(),
+      }),
+    })
+    if (response.status === 401) {
+      await router.replace({ name: 'login' })
+      return
+    }
+    if (response.status === 404) {
+      scanNotice.value = 'No unit product matches this GTIN yet. Receive the unit product first and link it to its pack.'
+      return
+    }
+    if (!response.ok) throw new Error('Could not start this unit.')
+
+    const data = await response.json() as {
+      implicit: boolean
+      matchedBy: 'lot_expiry' | 'expiry' | 'gtin' | null
+      serialAlreadyUsed: boolean
+    }
+    scanNotice.value = data.implicit
+      ? 'No received pack had units remaining, so this scan was recorded as an implicit unit.'
+      : `Unit started from the matching pack (${data.matchedBy?.replace('_', ' and ')} match).`
+    if (data.serialAlreadyUsed) scanNotice.value += ' This serial was already recorded.'
+    await loadDashboard()
+  } catch {
+    scanNotice.value = 'The inventory service could not start this unit. Try again.'
+  }
 }
 
 async function applyReceiptRescan(result: BarcodeParseResult) {
@@ -278,6 +339,7 @@ async function saveReceipt() {
           name: productName.value,
           gtin: scannedBarcode.value.kind === 'gs1' ? scannedBarcode.value.fields.gtin : undefined,
           containsQty: Number(containsQty.value),
+          containsProductId: containsProductId.value ? Number(containsProductId.value) : undefined,
         }),
       })
       if (productResponse.status === 401) {
@@ -422,7 +484,7 @@ onMounted(loadDashboard)
             <strong>{{ pkg.product_name }}</strong>
             <span>{{ pkg.manufacturer }} · {{ pkg.category_name }}</span>
           </div>
-          <span class="inventory-quantity">{{ pkg.contains_qty ?? 1 }} units</span>
+          <span class="inventory-quantity">{{ pkg.units_remaining }} / {{ pkg.contains_qty ?? 1 }} units</span>
           <span class="inventory-expiry">{{ pkg.expiry ? `Use by ${pkg.expiry}` : 'No expiry recorded' }}</span>
           <span class="inventory-meta">{{ pkg.lot ? `Lot ${pkg.lot}` : 'No lot' }}{{ pkg.serial ? ` · Serial ${pkg.serial}` : '' }} · received {{ pkg.received_on }}</span>
           <button
@@ -544,6 +606,15 @@ onMounted(loadDashboard)
 
             <label for="receipt-quantity">Units in this package</label>
             <input id="receipt-quantity" v-model="containsQty" type="number" min="1" max="10000" required />
+            <template v-if="Number(containsQty) > 1">
+              <label for="receipt-contains-product">Product inside</label>
+              <select id="receipt-contains-product" v-model="containsProductId">
+                <option value="">Not specified</option>
+                <option v-for="product in containedProducts" :key="product.id" :value="String(product.id)">
+                  {{ product.manufacturer }} · {{ product.name }}
+                </option>
+              </select>
+            </template>
           </template>
 
           <div class="receipt-field-grid">
