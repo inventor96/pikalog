@@ -41,6 +41,21 @@ type DurationStatistic = {
   earlyFailureRate: number | null
 }
 
+type CategoryForecast = {
+  categoryId: number
+  categoryName: string
+  stockUnits: number
+  activeUnits: number
+  expiredUnits: number
+  stockDays: number | null
+  runOutDate: string | null
+  nextPick: 'filler' | 'hard' | 'none'
+  nextPickProduct: string | null
+  fillerSlotsSafe: number
+  wasteForecast: { preferred: number; tolerated: number }
+  assumptions: string[]
+}
+
 type Product = {
   id: number
   category_id: number
@@ -78,6 +93,7 @@ const overview = ref<Overview | null>(null)
 const packages = ref<InventoryPackage[]>([])
 const activityEvents = ref<ActivityEvent[]>([])
 const durationStats = ref<DurationStatistic[]>([])
+const categoryForecasts = ref<CategoryForecast[]>([])
 const isLoading = ref(false)
 const errorMessage = ref('')
 const scanNotice = ref('')
@@ -114,6 +130,12 @@ const todayLabel = computed(() =>
   new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).format(new Date()),
 )
 const unitsOnHand = computed(() => packages.value.reduce((total, pkg) => total + pkg.units_remaining, 0))
+const earliestRunOut = computed(() => categoryForecasts.value
+  .filter((forecast) => forecast.runOutDate && forecast.stockDays !== null)
+  .sort((first, second) => first.runOutDate!.localeCompare(second.runOutDate!))[0] ?? null)
+const nextPickForecast = computed(() => categoryForecasts.value
+  .filter((forecast) => forecast.nextPickProduct)
+  .sort((first, second) => (first.runOutDate ?? '9999').localeCompare(second.runOutDate ?? '9999'))[0] ?? null)
 const containedProducts = computed(() => products.value.filter((product) =>
   product.category_id === Number(categoryId.value) && product.contains_product_id === null,
 ))
@@ -140,27 +162,29 @@ async function loadDashboard() {
   errorMessage.value = ''
 
   try {
-    const [categoriesResponse, productsResponse, overviewResponse, inventoryResponse, activityResponse] = await Promise.all([
+    const [categoriesResponse, productsResponse, overviewResponse, inventoryResponse, activityResponse, forecastResponse] = await Promise.all([
       fetch('/api/categories'),
       fetch('/api/products'),
       fetch('/api/overview'),
       fetch('/api/inventory'),
       fetch('/api/activity'),
+      fetch(`/api/forecast?today=${todayIsoDate()}`),
     ])
-    if (!categoriesResponse.ok || !productsResponse.ok || !overviewResponse.ok || !inventoryResponse.ok || !activityResponse.ok) {
-      if ([categoriesResponse.status, productsResponse.status, overviewResponse.status, inventoryResponse.status, activityResponse.status].includes(401)) {
+    if (!categoriesResponse.ok || !productsResponse.ok || !overviewResponse.ok || !inventoryResponse.ok || !activityResponse.ok || !forecastResponse.ok) {
+      if ([categoriesResponse.status, productsResponse.status, overviewResponse.status, inventoryResponse.status, activityResponse.status, forecastResponse.status].includes(401)) {
         await router.replace({ name: 'login' })
         return
       }
       throw new Error('Could not load the inventory.')
     }
 
-    const [categoryData, productData, overviewData, inventoryData, activityData] = await Promise.all([
+    const [categoryData, productData, overviewData, inventoryData, activityData, forecastData] = await Promise.all([
       categoriesResponse.json() as Promise<{ categories: Category[] }>,
       productsResponse.json() as Promise<{ products: Product[] }>,
       overviewResponse.json() as Promise<Overview>,
       inventoryResponse.json() as Promise<{ packages: InventoryPackage[] }>,
       activityResponse.json() as Promise<{ events: ActivityEvent[]; durationStats: DurationStatistic[] }>,
+      forecastResponse.json() as Promise<{ categories: CategoryForecast[] }>,
     ])
     categories.value = categoryData.categories
     products.value = productData.products
@@ -168,6 +192,7 @@ async function loadDashboard() {
     packages.value = inventoryData.packages
     activityEvents.value = activityData.events
     durationStats.value = activityData.durationStats
+    categoryForecasts.value = forecastData.categories
     if (!categoryId.value && categories.value[0]) categoryId.value = String(categories.value[0].id)
     refreshedAt.value = new Intl.DateTimeFormat(undefined, {
       hour: 'numeric',
@@ -503,13 +528,21 @@ onMounted(loadDashboard)
       </div>
       <div class="metric">
         <div class="metric-label">RUN-OUT</div>
-        <div class="metric-value metric-value--pending">—</div>
-        <div class="metric-note">Not enough history yet</div>
+        <div class="metric-value" :class="{ 'metric-value--pending': !earliestRunOut }">
+          {{ earliestRunOut?.runOutDate ?? '—' }}
+        </div>
+        <div class="metric-note">
+          {{ earliestRunOut ? `${earliestRunOut.categoryName} · ${Math.ceil(earliestRunOut.stockDays ?? 0)} estimated days` : 'Add rated wear or complete usage samples' }}
+        </div>
       </div>
       <div class="metric">
         <div class="metric-label">NEXT PICK</div>
-        <div class="metric-value metric-value--pending">—</div>
-        <div class="metric-note">No active inventory</div>
+        <div class="metric-value" :class="{ 'metric-value--pending': !nextPickForecast }">
+          {{ nextPickForecast?.nextPickProduct ?? '—' }}
+        </div>
+        <div class="metric-note">
+          {{ nextPickForecast ? `${nextPickForecast.categoryName} · ${nextPickForecast.nextPick === 'filler' ? `${nextPickForecast.fillerSlotsSafe} safe filler slots` : 'use before hard expiry'}` : 'No unexpired stock to recommend' }}
+        </div>
       </div>
     </section>
 
@@ -627,16 +660,40 @@ onMounted(loadDashboard)
       <p v-else class="activity-note">No ledger events yet.</p>
     </section>
 
-      <section id="outlook" class="ledger-section activity-section">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">EXPIRY-AWARE FORECAST</p>
-            <h2>Run-out outlook</h2>
-          </div>
-          <span class="section-count">ESTIMATE</span>
+    <section id="outlook" class="ledger-section activity-section">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">EXPIRY-AWARE FORECAST</p>
+          <h2>Run-out outlook</h2>
         </div>
-        <p class="activity-note">A forecast will be available once supply receipts and usage are recorded.</p>
-      </section>
+        <span class="section-count">ESTIMATE</span>
+      </div>
+      <div v-if="categoryForecasts.length" class="forecast-list">
+        <article v-for="forecast in categoryForecasts" :key="forecast.categoryId" class="forecast-row">
+          <div class="forecast-category">
+            <strong>{{ forecast.categoryName }}</strong>
+            <span>{{ forecast.stockUnits }} unstarted units · {{ forecast.activeUnits }} active</span>
+          </div>
+          <div class="forecast-measure">
+            <strong>{{ forecast.runOutDate ?? '—' }}</strong>
+            <span>{{ forecast.stockDays === null ? 'duration unavailable' : `${Math.ceil(forecast.stockDays)} estimated days` }}</span>
+          </div>
+          <div class="forecast-measure">
+            <strong>{{ forecast.nextPickProduct ?? 'No pick' }}</strong>
+            <span>{{ forecast.nextPick === 'filler' ? `${forecast.fillerSlotsSafe} safe filler slots` : forecast.nextPick === 'hard' ? 'hard-expiry stock first' : 'no unexpired stock' }}</span>
+          </div>
+          <div class="forecast-measure">
+            <strong>{{ forecast.wasteForecast.preferred }} / {{ forecast.wasteForecast.tolerated }}</strong>
+            <span>preferred / tolerated waste</span>
+          </div>
+          <ul v-if="forecast.assumptions.length || forecast.expiredUnits" class="forecast-assumptions">
+            <li v-if="forecast.expiredUnits">{{ forecast.expiredUnits }} expired units excluded</li>
+            <li v-for="assumption in forecast.assumptions" :key="assumption">{{ assumption }}</li>
+          </ul>
+        </article>
+      </div>
+      <p v-else class="activity-note">Receive stock to see run-out and expiry-aware pick estimates.</p>
+    </section>
 
     <footer class="disclaimer">
       <span>Not a medical device. Projections are estimates; follow the manufacturer's instructions for use.</span>

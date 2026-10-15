@@ -642,6 +642,16 @@ describe('Worker authentication routes', () => {
 		const startData = await startResponse.json() as { started: boolean; implicit: boolean; matchedBy: string }
 		const inventoryResponse = await app.request('/api/inventory', { headers: { Cookie: cookie } }, env)
 		const inventory = await inventoryResponse.json() as { packages: Array<Record<string, unknown>> }
+		const forecastResponse = await app.request('/api/forecast?today=2026-10-15', { headers: { Cookie: cookie } }, env)
+		const forecast = await forecastResponse.json() as {
+			categories: Array<{
+				categoryName: string
+				stockUnits: number
+				activeUnits: number
+				runOutDate: string
+				nextPickProduct: string | null
+			}>
+		}
 
 		expect(unitResponse.status).toBe(201)
 		expect(packResponse.status).toBe(201)
@@ -650,6 +660,14 @@ describe('Worker authentication routes', () => {
 		expect(env.DB.events.filter((event) => event.type === 'unit_started'))
 			.toMatchObject([{ type: 'unit_started', occurred_on: '2026-10-15' }])
 		expect(inventory.packages).toMatchObject([{ units_remaining: 1 }])
+		expect(forecastResponse.status).toBe(200)
+		expect(forecast.categories).toMatchObject([{
+			categoryName: 'CGM sensor',
+			stockUnits: 1,
+			activeUnits: 1,
+			runOutDate: '2026-11-04',
+			nextPickProduct: 'Sensor',
+		}])
 	})
 
 	it('creates an implicit package when a unit scan has no eligible received pack', async () => {

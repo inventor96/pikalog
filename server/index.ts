@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { matchUnitScan, planPackageOpen, planUnitStart, type OpenPackageCandidate } from '../src/domain/ledger'
+import { calculateSupplyForecast, type ForecastEvent } from '../src/domain/forecast'
 import { calculateDurationStatistics, type DurationLedgerEvent } from '../src/domain/statistics'
 import {
 	createSession,
@@ -249,6 +250,100 @@ app.get('/api/activity', async (context) => {
 	return context.json({
 		events: results.slice(-30).reverse(),
 		durationStats: calculateDurationStatistics(durationEvents),
+	})
+})
+
+app.get('/api/forecast', async (context) => {
+	const requestedToday = context.req.query('today') ?? ''
+	const today = isIsoDate(requestedToday) ? requestedToday : new Date().toISOString().slice(0, 10)
+	const [productRows, packageRows, eventRows] = await Promise.all([
+		context.env.DB.prepare(`
+			SELECT products.id, products.category_id, categories.name AS category_name,
+				products.name, products.contains_product_id, products.rated_wear_days,
+				products.min_samples, products.expiry_rule, products.expiry_strictness
+			FROM products
+			JOIN categories ON categories.id = products.category_id
+		`).all<{
+			id: number
+			category_id: number
+			category_name: string
+			name: string
+			contains_product_id: number | null
+			rated_wear_days: number | null
+			min_samples: number
+			expiry_rule: 'finish_by' | 'start_by' | 'none'
+			expiry_strictness: 'hard' | 'soft'
+		}>(),
+		context.env.DB.prepare(`
+			SELECT packages.id, packages.product_id, packages.expiry,
+				MAX(0, COALESCE(products.contains_qty, 1)
+					+ COALESCE((SELECT SUM(qty) FROM events AS adjusted
+						WHERE adjusted.package_id = packages.id AND adjusted.type = 'adjusted'), 0)
+					- COALESCE((SELECT SUM(qty) FROM events AS consumed
+						WHERE consumed.package_id = packages.id AND consumed.type IN ('unit_started', 'discarded')), 0)
+				) AS units_remaining,
+				(SELECT occurred_on FROM events
+					WHERE events.package_id = packages.id AND events.type = 'received'
+					ORDER BY events.id LIMIT 1) AS received_on
+			FROM packages
+			JOIN products ON products.id = packages.product_id
+			WHERE EXISTS (SELECT 1 FROM events
+				WHERE events.package_id = packages.id AND events.type = 'received')
+		`).all<{
+			id: number
+			product_id: number
+			expiry: string | null
+			units_remaining: number
+			received_on: string
+		}>(),
+		context.env.DB.prepare(`
+			SELECT events.id, events.package_id AS packageId, events.type,
+				events.occurred_on AS occurredOn, events.unit_expiry AS unitExpiry,
+				events.inferred, events.end_reason AS endReason,
+			COALESCE(unit_products.id, products.id) AS productId,
+			COALESCE(unit_products.name, products.name) AS productName,
+			categories.id AS categoryId, categories.name AS categoryName,
+			categories.overlap_allowed AS overlapAllowed
+			FROM events
+			JOIN packages ON packages.id = events.package_id
+			JOIN products ON products.id = packages.product_id
+			LEFT JOIN products AS unit_products ON unit_products.id = products.contains_product_id
+			JOIN categories ON categories.id = products.category_id
+			ORDER BY events.occurred_on, events.id
+		`).all<ForecastEvent & { productName: string }>(),
+	])
+	const products = productRows.results.map((product) => ({
+		id: product.id,
+		categoryId: product.category_id,
+		categoryName: product.category_name,
+		name: product.name,
+		containsProductId: product.contains_product_id,
+		ratedWearDays: product.rated_wear_days,
+		minSamples: product.min_samples,
+		expiryRule: product.expiry_rule,
+		expiryStrictness: product.expiry_strictness,
+	}))
+	const packages = packageRows.results.map((inventoryPackage) => ({
+		id: inventoryPackage.id,
+		productId: inventoryPackage.product_id,
+		expiry: inventoryPackage.expiry,
+		receivedOn: inventoryPackage.received_on,
+		unitsRemaining: inventoryPackage.units_remaining,
+	}))
+	const durationEvents = eventRows.results.filter(
+		(event): event is typeof event & { type: 'unit_started' | 'unit_ended' } =>
+			event.type === 'unit_started' || event.type === 'unit_ended',
+	)
+	const durationStatistics = calculateDurationStatistics(durationEvents)
+	return context.json({
+		today,
+		categories: calculateSupplyForecast({
+			today,
+			products,
+			packages,
+			events: durationEvents as ForecastEvent[],
+			durationStatistics,
+		}),
 	})
 })
 
