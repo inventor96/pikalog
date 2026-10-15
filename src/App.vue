@@ -7,7 +7,7 @@ import { Boxes, ChartNoAxesCombined, ClipboardList, LayoutDashboard } from '@luc
   <div class="app-shell">
     <aside class="side-rail">
       <a class="brand" href="#overview" aria-label="Pikalog overview">
-        <span class="brand-mark" aria-hidden="true">p</span>
+        <img class="brand-mark" src="/favicon.svg" alt="" aria-hidden="true">
         <span class="brand-name">pikalog</span>
       </a>
 

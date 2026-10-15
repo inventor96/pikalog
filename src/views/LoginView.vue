@@ -62,7 +62,7 @@ async function signIn() {
 	<main class="login-screen">
 		<section class="login-panel" aria-labelledby="login-title">
 			<div class="login-brand">
-				<span class="login-brand-mark" aria-hidden="true">p</span>
+				<img class="login-brand-mark" src="/favicon.svg" alt="" aria-hidden="true">
 				<span>pikalog</span>
 			</div>
 			<p class="login-eyebrow">PRIVATE WORKSPACE</p>
@@ -129,14 +129,11 @@ async function signIn() {
 }
 
 .login-brand-mark {
-	display: grid;
+	display: block;
 	width: 30px;
-	 aspect-ratio: 1;
-	place-items: center;
-	border-radius: 7px;
-	background: var(--color-green);
-	color: white;
-	font-size: 21px;
+	height: 30px;
+	flex: 0 0 auto;
+	object-fit: contain;
 }
 
 .login-eyebrow {

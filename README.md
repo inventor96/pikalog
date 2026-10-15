@@ -1,6 +1,18 @@
 # Pikalog
 
+![Pikalog Logo](public/web-app-manifest-192x192.png)
+
 Expiry-aware inventory tracking for diabetes supplies. Pikalog stores supply inventory only. It does not collect glucose readings, doses, or other health data, and it is not a medical device. Projections are estimates; manufacturer instructions for use take precedence.
+
+## Why the Pika?
+
+Pika is a small mammal that spends the summer stockpiling hay for winter, which is FIFO (First In, First Out) rotation in animal form. Similarly, Pikalog helps you manage your diabetes supplies using the same principle.
+
+## How to use this project
+
+This project is intended to be set up per-person, meaning each individual user should deploy their own instance to manage their inventory. It's built around deploying to Cloudflare Workers (thanks to their generous free tier), but it can be adapted to other hosting environments if you choose. Click the button below to set up your own instance.
+
+**PASSWORD NOTE:** The absolute **minimum** password length is 8 characters, but 12 to 15 or more characters is strongly recommended for security. Since this project doesn't store sensitive information, nor does it provide mission-critical functionality, the worst that could happen is someone affecting your inventory numbers. It's up to you how much you want to protect those numbers.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/inventor96/pikalog)
 
