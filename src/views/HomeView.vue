@@ -819,7 +819,7 @@ onMounted(loadDashboard)
         Receive stock to see run-out and expiry-aware pick estimates.
       </p>
       <p v-else-if="includeProjectedReceipts && !hasProjectedReceipts" class="activity-note">
-        Projected receipts need at least two distinct receipt dates per product.
+        Projected receipts need two distinct dates after the first receipt date per product.
       </p>
     </section>
 

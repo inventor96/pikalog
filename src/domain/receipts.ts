@@ -71,14 +71,17 @@ export function estimateProjectedReceipts(
 		const groups: ReceiptGroup[] = [...grouped.entries()]
 			.map(([day, quantity]) => ({ day, quantity }))
 			.sort((first, second) => first.day - second.day)
-		if (groups.length < 2) continue
+		if (groups.length < 3) continue
 
-		const intervals = groups.slice(1).map((group, index) => group.day - groups[index]!.day)
+		const onboardingDay = groups[0]!.day
+		const recurringHistory = history.filter((receipt) => receipt.day > onboardingDay)
+		const recurringGroups = groups.slice(1)
+		const intervals = recurringGroups.slice(1).map((group, index) => group.day - recurringGroups[index]!.day)
 		const interval = median(intervals)
 		if (interval === null || interval < 1) continue
-		const quantity = Math.max(1, Math.round(median(groups.map((group) => group.quantity)) ?? 1))
-		const shelfLife = median(history.flatMap((receipt) => receipt.shelfLife === null ? [] : [receipt.shelfLife]))
-		let arrivalDay = groups.at(-1)!.day + Math.round(interval)
+		const quantity = Math.max(1, Math.round(median(recurringGroups.map((group) => group.quantity)) ?? 1))
+		const shelfLife = median(recurringHistory.flatMap((receipt) => receipt.shelfLife === null ? [] : [receipt.shelfLife]))
+		let arrivalDay = recurringGroups.at(-1)!.day + Math.round(interval)
 		while (arrivalDay <= todayDay) arrivalDay += Math.round(interval)
 		const horizonEnd = todayDay + horizonDays
 		let projectedCount = 0

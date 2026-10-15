@@ -483,6 +483,7 @@ describe('Worker authentication routes', () => {
 		}, env)
 		const pack = await packResponse.json() as { product: { id: number } }
 		for (const [receivedOn, expiry] of [
+			['2026-07-01', '2027-01-01'],
 			['2026-08-01', '2026-11-09'],
 			['2026-09-01', '2026-12-10'],
 		]) {
