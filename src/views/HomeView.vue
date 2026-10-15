@@ -17,6 +17,30 @@ type Overview = {
   eventCount: number
 }
 
+type ActivityEvent = {
+  id: number
+  type: string
+  occurredOn: string
+  qty: number
+  inferred: number
+  productName: string
+  unitSerial: string | null
+  endReason: string | null
+}
+
+type DurationStatistic = {
+  productId: number
+  productName: string
+  sampleCount: number
+  meanDays: number | null
+  medianDays: number | null
+  lastTenMeanDays: number | null
+  lastTenMedianDays: number | null
+  loggedSampleCount: number
+  inferredSampleCount: number
+  earlyFailureRate: number | null
+}
+
 type Product = {
   id: number
   category_id: number
@@ -48,6 +72,8 @@ const categories = ref<Category[]>([])
 const products = ref<Product[]>([])
 const overview = ref<Overview | null>(null)
 const packages = ref<InventoryPackage[]>([])
+const activityEvents = ref<ActivityEvent[]>([])
+const durationStats = ref<DurationStatistic[]>([])
 const isLoading = ref(false)
 const errorMessage = ref('')
 const scanNotice = ref('')
@@ -91,35 +117,50 @@ const hasScanProblem = computed(() => {
     || (result?.kind === 'gs1' && result.warnings.length > 0)
 })
 
+function activityLabel(type: string): string {
+  switch (type) {
+    case 'received': return 'Received'
+    case 'opened': return 'Opened package'
+    case 'unit_started': return 'Started unit'
+    case 'unit_ended': return 'Ended unit'
+    case 'discarded': return 'Discarded'
+    default: return 'Stock adjusted'
+  }
+}
+
 async function loadDashboard() {
   isLoading.value = true
   errorMessage.value = ''
 
   try {
-    const [categoriesResponse, productsResponse, overviewResponse, inventoryResponse] = await Promise.all([
+    const [categoriesResponse, productsResponse, overviewResponse, inventoryResponse, activityResponse] = await Promise.all([
       fetch('/api/categories'),
       fetch('/api/products'),
       fetch('/api/overview'),
       fetch('/api/inventory'),
+      fetch('/api/activity'),
     ])
-    if (!categoriesResponse.ok || !productsResponse.ok || !overviewResponse.ok || !inventoryResponse.ok) {
-      if ([categoriesResponse.status, productsResponse.status, overviewResponse.status, inventoryResponse.status].includes(401)) {
+    if (!categoriesResponse.ok || !productsResponse.ok || !overviewResponse.ok || !inventoryResponse.ok || !activityResponse.ok) {
+      if ([categoriesResponse.status, productsResponse.status, overviewResponse.status, inventoryResponse.status, activityResponse.status].includes(401)) {
         await router.replace({ name: 'login' })
         return
       }
       throw new Error('Could not load the inventory.')
     }
 
-    const [categoryData, productData, overviewData, inventoryData] = await Promise.all([
+    const [categoryData, productData, overviewData, inventoryData, activityData] = await Promise.all([
       categoriesResponse.json() as Promise<{ categories: Category[] }>,
       productsResponse.json() as Promise<{ products: Product[] }>,
       overviewResponse.json() as Promise<Overview>,
       inventoryResponse.json() as Promise<{ packages: InventoryPackage[] }>,
+      activityResponse.json() as Promise<{ events: ActivityEvent[]; durationStats: DurationStatistic[] }>,
     ])
     categories.value = categoryData.categories
     products.value = productData.products
     overview.value = overviewData
     packages.value = inventoryData.packages
+    activityEvents.value = activityData.events
+    durationStats.value = activityData.durationStats
     if (!categoryId.value && categories.value[0]) categoryId.value = String(categories.value[0].id)
     refreshedAt.value = new Intl.DateTimeFormat(undefined, {
       hour: 'numeric',
@@ -535,7 +576,41 @@ onMounted(loadDashboard)
         </div>
         <span class="section-count">{{ overview ? `${overview.eventCount} EVENTS` : '— EVENTS' }}</span>
       </div>
-      <p class="activity-note">{{ overview?.eventCount ?? 0 }} immutable ledger events recorded.</p>
+      <div v-if="durationStats.length" class="duration-list">
+        <article v-for="stat in durationStats" :key="stat.productId" class="duration-row">
+          <div class="duration-product">
+            <strong>{{ stat.productName }}</strong>
+            <span>{{ stat.sampleCount }} completed samples · {{ stat.loggedSampleCount }} logged · {{ stat.inferredSampleCount }} inferred</span>
+          </div>
+          <div class="duration-measure">
+            <span class="duration-value">{{ stat.medianDays ?? '—' }}</span>
+            <span>median days</span>
+          </div>
+          <div class="duration-measure">
+            <span class="duration-value">{{ stat.meanDays?.toFixed(1) ?? '—' }}</span>
+            <span>mean days</span>
+          </div>
+          <div class="duration-measure">
+            <span class="duration-value">{{ stat.lastTenMeanDays?.toFixed(1) ?? '—' }}</span>
+            <span>last 10 mean</span>
+          </div>
+          <div class="duration-measure">
+            <span class="duration-value">{{ stat.earlyFailureRate === null ? '—' : `${Math.round(stat.earlyFailureRate * 100)}%` }}</span>
+            <span>early failures</span>
+          </div>
+        </article>
+      </div>
+      <p v-else class="activity-note">Completed wear durations will appear after a unit ends or a new unit starts.</p>
+      <div v-if="activityEvents.length" class="event-list" aria-label="Recent ledger events">
+        <article v-for="event in activityEvents" :key="event.id" class="event-row">
+          <span class="event-date">{{ event.occurredOn }}</span>
+          <span class="event-type">{{ activityLabel(event.type) }}</span>
+          <span class="event-product">{{ event.productName }}<template v-if="event.unitSerial"> · {{ event.unitSerial }}</template></span>
+          <span v-if="event.inferred" class="event-reason">Inferred</span>
+          <span v-if="event.endReason" class="event-reason">{{ event.endReason.replace('_', ' ') }}</span>
+        </article>
+      </div>
+      <p v-else class="activity-note">No ledger events yet.</p>
     </section>
 
       <section id="outlook" class="ledger-section activity-section">

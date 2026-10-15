@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { matchUnitScan, planPackageOpen, planUnitStart, type OpenPackageCandidate } from '../src/domain/ledger'
+import { calculateDurationStatistics, type DurationLedgerEvent } from '../src/domain/statistics'
 import {
 	createSession,
 	hashClientAddress,
@@ -212,6 +213,38 @@ app.get('/api/overview', async (context) => {
 	return context.json({
 		packageCount: packages?.count ?? 0,
 		eventCount: events?.count ?? 0,
+	})
+})
+
+app.get('/api/activity', async (context) => {
+	const { results } = await context.env.DB.prepare(`
+		SELECT events.id, events.package_id AS packageId, events.type, events.qty,
+			events.occurred_on AS occurredOn, events.unit_serial AS unitSerial,
+			events.unit_expiry AS unitExpiry, events.inferred, events.end_reason AS endReason,
+			COALESCE(unit_products.id, products.id) AS productId,
+			COALESCE(unit_products.name, products.name) AS productName,
+			categories.id AS categoryId, categories.name AS categoryName,
+			categories.overlap_allowed AS overlapAllowed
+		FROM events
+		JOIN packages ON packages.id = events.package_id
+		JOIN products ON products.id = packages.product_id
+		LEFT JOIN products AS unit_products ON unit_products.id = products.contains_product_id
+		JOIN categories ON categories.id = products.category_id
+		ORDER BY events.occurred_on, events.id
+	`).all<DurationLedgerEvent & {
+		packageId: number
+		qty: number
+		unitSerial: string | null
+		unitExpiry: string | null
+		categoryName: string
+	}>()
+	const durationEvents = results.filter(
+		(event): event is typeof event & { type: 'unit_started' | 'unit_ended' } =>
+			event.type === 'unit_started' || event.type === 'unit_ended',
+	)
+	return context.json({
+		events: results.slice(-30).reverse(),
+		durationStats: calculateDurationStatistics(durationEvents),
 	})
 })
 

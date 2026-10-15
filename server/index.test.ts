@@ -30,6 +30,7 @@ type FakeEvent = {
 	unit_serial?: string | null
 	unit_expiry?: string | null
 	end_reason?: string | null
+	inferred?: number
 }
 
 function createDatabase() {
@@ -193,6 +194,33 @@ function createDatabase() {
 					return null
 				},
 				async all<T>() {
+					if (query.includes('FROM events') && query.includes('unit_products')) {
+						return {
+							results: events.flatMap((event) => {
+								const pkg = packages.find((item) => item.id === event.package_id)
+								const product = products.find((item) => item.id === pkg?.product_id)
+								const unitProduct = products.find((item) => item.id === product?.contains_product_id)
+								const category = categories.find((item) => item.id === product?.category_id)
+								if (!pkg || !product || !category) return []
+								return [{
+									id: event.id,
+									packageId: event.package_id,
+									type: event.type,
+									qty: event.qty,
+									occurredOn: event.occurred_on,
+									unitSerial: event.unit_serial ?? null,
+									unitExpiry: event.unit_expiry ?? null,
+									inferred: event.inferred ?? 0,
+									endReason: event.end_reason ?? null,
+									productId: unitProduct?.id ?? product.id,
+									productName: unitProduct?.name ?? product.name,
+									categoryId: category.id,
+									categoryName: category.name,
+									overlapAllowed: Boolean(category.overlap_allowed),
+								}]
+							}) as T[],
+						}
+					}
 					if (query.includes('FROM categories')) return { results: categories as T[] }
 					if (query.includes('unit_serial FROM events')) {
 						return { results: events.filter((event) => event.unit_serial).map((event) => ({ unit_serial: event.unit_serial! })) as T[] }
@@ -475,9 +503,36 @@ describe('Worker authentication routes', () => {
 			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
 			body: JSON.stringify({ occurredOn: '2026-10-17' }),
 		}, env)
+		const activityResponse = await app.request('/api/activity', { headers: { Cookie: cookie } }, env)
+		const activity = await activityResponse.json() as {
+			events: Array<{ type: string; occurredOn: string }>
+			durationStats: Array<{ productName: string; sampleCount: number; meanDays: number }>
+		}
 
 		expect(secondReceiptResponse.status).toBe(201)
 		expect(secondOpenResponse.status).toBe(201)
+		expect(activityResponse.status).toBe(200)
+		expect(activity.events[0]).toEqual({
+			id: 7,
+			packageId: 2,
+			type: 'unit_started',
+			qty: 1,
+			occurredOn: '2026-10-17',
+			unitSerial: null,
+			unitExpiry: null,
+			inferred: 0,
+			endReason: null,
+			productId: 1,
+			productName: 'Sensor pack',
+			categoryId: 1,
+			categoryName: 'CGM sensor',
+			overlapAllowed: false,
+		})
+		expect(activity.durationStats).toMatchObject([{
+			productName: 'Sensor pack',
+			sampleCount: 1,
+			meanDays: 2,
+		}])
 		expect(env.DB.events).toMatchObject([
 			{ type: 'received', occurred_on: '2026-10-14' },
 			{ type: 'opened', occurred_on: '2026-10-15' },
