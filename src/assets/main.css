@@ -705,6 +705,82 @@
   font-size: 11px;
 }
 
+.configuration-page .category-policy {
+  display: block;
+}
+
+.product-list {
+  border-top: 1px solid var(--color-line);
+}
+
+.product-row {
+  display: grid;
+  grid-template-columns: minmax(170px, 1fr) minmax(0, 2.6fr);
+  align-items: center;
+  gap: 18px;
+  border-bottom: 1px solid var(--color-line);
+  padding: 15px 0;
+}
+
+.product-identity {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.product-identity strong {
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.product-identity span {
+  color: var(--color-ink-soft);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.product-facts {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.product-facts div {
+  min-width: 0;
+}
+
+.product-facts dt {
+  margin-bottom: 4px;
+  color: var(--color-ink-faint);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.product-facts dd {
+  margin: 0;
+  color: var(--color-ink-soft);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.product-facts code {
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.configuration-empty {
+  min-height: 54px;
+  border-top: 1px solid var(--color-line);
+  border-bottom: 1px solid var(--color-line);
+  padding: 18px 2px;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+}
+
 .category-loading,
 .load-error {
   display: flex;
@@ -992,6 +1068,23 @@
     display: none;
   }
 
+  .configuration-page .category-row {
+    grid-template-columns: 34px minmax(0, 1.2fr) minmax(0, 1fr) minmax(120px, auto);
+  }
+
+  .configuration-page .category-policy {
+    display: block;
+  }
+
+  .product-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .product-facts {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .forecast-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1202,6 +1295,23 @@
   .category-row {
     grid-template-columns: 28px minmax(0, 1fr) auto;
     gap: 8px;
+  }
+
+  .configuration-page .category-row {
+    grid-template-columns: 28px minmax(0, 1fr);
+    gap: 8px;
+    padding: 8px 0;
+  }
+
+  .configuration-page .category-row code,
+  .configuration-page .category-policy {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .product-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
   }
 
   .category-row code {

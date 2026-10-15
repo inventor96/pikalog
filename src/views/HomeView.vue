@@ -116,7 +116,6 @@ const isSavingProjectionSetting = ref(false)
 const isSyncingCatalog = ref(false)
 const errorMessage = ref('')
 const scanNotice = ref('')
-const refreshedAt = ref('')
 const scannerOpen = ref(false)
 const isRescanningReceipt = ref(false)
 const receiptDialogOpen = ref(false)
@@ -225,10 +224,6 @@ async function loadDashboard() {
     includeProjectedReceipts.value = forecastData.includeProjectedReceipts
     catalogStatus.value = catalogStatusData
     if (!categoryId.value && categories.value[0]) categoryId.value = String(categories.value[0].id)
-    refreshedAt.value = new Intl.DateTimeFormat(undefined, {
-      hour: 'numeric',
-      minute: '2-digit',
-    }).format(new Date())
   } catch {
     errorMessage.value = 'The inventory service is unavailable. Try refreshing.'
   } finally {
@@ -664,34 +659,6 @@ onMounted(loadDashboard)
           <span v-else class="inventory-open-state">Opened</span>
         </article>
       </div>
-    </section>
-
-    <section id="categories" class="ledger-section category-section">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">TRACKING SCOPE</p>
-          <h2>Supply categories</h2>
-        </div>
-        <span class="section-count">{{ categories.length }} CATEGORIES</span>
-      </div>
-
-      <div v-if="errorMessage" class="load-error" role="alert">
-        <AlertCircle :size="17" aria-hidden="true" />
-        <span>{{ errorMessage }}</span>
-        <button type="button" @click="loadDashboard">Retry</button>
-      </div>
-      <div v-else-if="isLoading && categories.length === 0" class="category-loading" aria-live="polite">
-        <span class="status-dot"></span>Loading categories
-      </div>
-      <div v-else class="category-list">
-        <div v-for="(category, index) in categories" :key="category.id" class="category-row">
-          <span class="category-index">{{ String(index + 1).padStart(2, '0') }}</span>
-          <span class="category-name">{{ category.name }}</span>
-          <code>{{ category.key }}</code>
-          <span class="category-policy">{{ category.overlap_allowed ? 'Overlap allowed' : 'Single active unit' }}</span>
-        </div>
-      </div>
-      <p v-if="refreshedAt" class="refresh-time">Updated {{ refreshedAt }}</p>
     </section>
 
     <section id="activity" class="ledger-section activity-section">

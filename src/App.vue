@@ -1,34 +1,56 @@
 <script setup lang="ts">
-import { RouterView } from 'vue-router'
+import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { Boxes, ChartNoAxesCombined, ClipboardList, LayoutDashboard } from '@lucide/vue'
+
+const route = useRoute()
 </script>
 
 <template>
   <div class="app-shell">
     <aside class="side-rail">
-      <a class="brand" href="#overview" aria-label="Pikalog overview">
+      <RouterLink class="brand" to="/" aria-label="Pikalog overview">
         <img class="brand-mark" src="/favicon.svg" alt="" aria-hidden="true">
         <span class="brand-name">pikalog</span>
-      </a>
+      </RouterLink>
 
       <div class="rail-section-label">WORKSPACE</div>
       <nav class="primary-nav" aria-label="Main navigation">
-        <a class="nav-link nav-link--active" href="#overview">
+        <RouterLink
+          to="/#overview"
+          class="nav-link"
+          :class="{ 'nav-link--active': route.name === 'home' && (!route.hash || route.hash === '#overview') }"
+          :aria-current="route.name === 'home' && (!route.hash || route.hash === '#overview') ? 'page' : undefined"
+        >
           <LayoutDashboard :size="18" :stroke-width="1.8" />
           <span>Overview</span>
-        </a>
-        <a class="nav-link" href="#categories">
+        </RouterLink>
+        <RouterLink
+          to="/configuration"
+          class="nav-link"
+          :class="{ 'nav-link--active': route.name === 'configuration' }"
+          :aria-current="route.name === 'configuration' ? 'page' : undefined"
+        >
           <Boxes :size="18" :stroke-width="1.8" />
-          <span>Categories</span>
-        </a>
-        <a class="nav-link" href="#activity">
+          <span>Configuration</span>
+        </RouterLink>
+        <RouterLink
+          to="/#activity"
+          class="nav-link"
+          :class="{ 'nav-link--active': route.name === 'home' && route.hash === '#activity' }"
+          :aria-current="route.name === 'home' && route.hash === '#activity' ? 'page' : undefined"
+        >
           <ClipboardList :size="18" :stroke-width="1.8" />
           <span>Activity</span>
-        </a>
-        <a class="nav-link" href="#outlook">
+        </RouterLink>
+        <RouterLink
+          to="/#outlook"
+          class="nav-link"
+          :class="{ 'nav-link--active': route.name === 'home' && route.hash === '#outlook' }"
+          :aria-current="route.name === 'home' && route.hash === '#outlook' ? 'page' : undefined"
+        >
           <ChartNoAxesCombined :size="18" :stroke-width="1.8" />
           <span>Outlook</span>
-        </a>
+        </RouterLink>
       </nav>
 
       <div class="rail-footer" id="about">
