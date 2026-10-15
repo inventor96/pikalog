@@ -6,9 +6,13 @@ import { ingest, type BarcodeParseResult } from '@/barcode/ingest'
 
 type ScanMode = 'receive' | 'open'
 
+const props = defineProps<{
+	initialMode?: ScanMode
+}>()
+
 const emit = defineEmits<{
 	close: []
-	detected: [result: BarcodeParseResult]
+	detected: [result: BarcodeParseResult, mode: ScanMode]
 }>()
 
 const modeStorageKey = 'pikalog.scan-mode'
@@ -37,6 +41,7 @@ const resultTitle = computed(() => {
 watch(scanMode, (value) => localStorage.setItem(modeStorageKey, value))
 
 onMounted(async () => {
+	if (props.initialMode) scanMode.value = props.initialMode
 	await nextTick()
 	dialogElement.value?.focus()
 	void startCamera()
@@ -47,7 +52,7 @@ onUnmounted(stopCamera)
 function acceptBarcode(raw: string) {
 	const result = ingest(raw)
 	scanResult.value = result
-	emit('detected', result)
+	emit('detected', result, scanMode.value)
 	stopCamera()
 }
 

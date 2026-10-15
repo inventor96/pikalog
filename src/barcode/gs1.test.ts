@@ -18,6 +18,18 @@ describe('parseGs1Barcode', () => {
 		})
 	})
 
+	it('parses the compact AI 01, AI 17, and AI 10 sample', () => {
+		expect(parseGs1Barcode('010570524402342017271001106016216')).toMatchObject({
+			kind: 'gs1',
+			fields: {
+				gtin: '05705244023420',
+				expiry: '2027-10-01',
+				lot: '6016216',
+			},
+			warnings: [],
+		})
+	})
+
 	it('parses a variable field boundary when a scanner omits the separator', () => {
 		const result = parseGs1Barcode(`01${gtin}1728123110LOT-721SERIAL-4`)
 
@@ -28,6 +40,31 @@ describe('parseGs1Barcode', () => {
 		if (result.kind === 'gs1') {
 			expect(result.warnings).toHaveLength(1)
 		}
+	})
+
+	it('parses parenthesized human-readable AIs and product variant AI 20', () => {
+		expect(parseGs1Barcode('(01)20763000413389(17)260305(10)HG8MJ2G(20)01')).toMatchObject({
+			kind: 'gs1',
+			fields: {
+				gtin: '20763000413389',
+				expiry: '2026-03-05',
+				lot: 'HG8MJ2G',
+				productVariant: '01',
+			},
+			warnings: [],
+		})
+	})
+
+	it('keeps recognized fields when an internal AI 91 follows them', () => {
+		expect(parseGs1Barcode('01003575998800021727043010T60004606{GS}210RW7HFKCC{GS}9178893-01')).toMatchObject({
+			kind: 'gs1',
+			fields: {
+				gtin: '00357599880002',
+				expiry: '2027-04-30',
+				lot: 'T60004606',
+				serial: '0RW7HFKCC',
+			},
+		})
 	})
 
 	it('treats expiry day 00 as the last day of the month', () => {

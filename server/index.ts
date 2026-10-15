@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
+import { planPackageOpen } from '../src/domain/ledger'
 import {
 	createSession,
 	hashClientAddress,
@@ -17,6 +18,31 @@ type Category = {
 	key: string
 	name: string
 	overlap_allowed: number
+}
+
+type Product = {
+	id: number
+	category_id: number
+	category_name: string
+	manufacturer: string
+	name: string
+	gtin: string | null
+	contains_qty: number | null
+}
+
+function isIsoDate(value: string): boolean {
+	if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+	const date = new Date(`${value}T00:00:00.000Z`)
+	return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value
+}
+
+function isValidGtin(value: string): boolean {
+	if (!/^\d{14}$/.test(value)) return false
+	let sum = 0
+	for (let index = value.length - 2, weight = 3; index >= 0; index -= 1, weight = weight === 3 ? 1 : 3) {
+		sum += Number(value[index]) * weight
+	}
+	return (10 - (sum % 10)) % 10 === Number(value.at(-1))
 }
 
 const app = new Hono<{ Bindings: Env }>()
@@ -194,6 +220,244 @@ app.get('/api/categories', async (context) => {
 	).all<Category>()
 
 	return context.json({ categories: results })
+})
+
+app.get('/api/products', async (context) => {
+	const { results } = await context.env.DB.prepare(`
+		SELECT products.id, products.category_id, categories.name AS category_name,
+			products.manufacturer, products.name, products.gtin, products.contains_qty
+		FROM products
+	JOIN categories ON categories.id = products.category_id
+	ORDER BY categories.id, products.manufacturer, products.name
+	`).all<Product>()
+
+	return context.json({ products: results })
+})
+
+app.post('/api/products', async (context) => {
+	const body = await context.req.json<{
+		categoryId?: unknown
+		manufacturer?: unknown
+		name?: unknown
+		gtin?: unknown
+		containsQty?: unknown
+	}>().catch(() => null)
+	const categoryId = body?.categoryId
+	const manufacturer = typeof body?.manufacturer === 'string' ? body.manufacturer.trim() : ''
+	const name = typeof body?.name === 'string' ? body.name.trim() : ''
+	const gtin = typeof body?.gtin === 'string' && body.gtin ? body.gtin : null
+	const containsQty = body?.containsQty === undefined ? 1 : body.containsQty
+
+	if (!Number.isSafeInteger(categoryId) || Number(categoryId) <= 0
+		|| !manufacturer || manufacturer.length > 120
+		|| !name || name.length > 160
+		|| !Number.isSafeInteger(containsQty) || Number(containsQty) <= 0 || Number(containsQty) > 10000
+		|| (gtin !== null && !isValidGtin(gtin))) {
+		return context.json({ error: 'invalid_product' }, 400)
+	}
+
+	const category = await context.env.DB.prepare('SELECT id FROM categories WHERE id = ?')
+		.bind(Number(categoryId))
+		.first<{ id: number }>()
+	if (!category) return context.json({ error: 'category_not_found' }, 400)
+	if (gtin) {
+		const existing = await context.env.DB.prepare('SELECT id FROM products WHERE gtin = ?')
+			.bind(gtin)
+			.first<{ id: number }>()
+		if (existing) return context.json({ error: 'gtin_already_exists' }, 409)
+	}
+
+	try {
+		const product = await context.env.DB.prepare(`
+			INSERT INTO products (category_id, manufacturer, name, gtin, contains_qty, origin)
+			VALUES (?, ?, ?, ?, ?, 'custom')
+			RETURNING id, category_id, manufacturer, name, gtin, contains_qty
+		`).bind(Number(categoryId), manufacturer, name, gtin, Number(containsQty)).first<{
+			id: number
+			category_id: number
+			manufacturer: string
+			name: string
+			gtin: string | null
+			contains_qty: number | null
+		}>()
+		if (!product) return context.json({ error: 'product_unavailable' }, 503)
+		return context.json({ product }, 201)
+	} catch {
+		return context.json({ error: 'product_unavailable' }, 503)
+	}
+})
+
+app.post('/api/receipts', async (context) => {
+	const body = await context.req.json<{
+		productId?: unknown
+		lot?: unknown
+		serial?: unknown
+		expiry?: unknown
+		rawBarcode?: unknown
+		receivedOn?: unknown
+	}>().catch(() => null)
+	const productId = body?.productId
+	const lot = typeof body?.lot === 'string' && body.lot ? body.lot : null
+	const serial = typeof body?.serial === 'string' && body.serial ? body.serial : null
+	const expiry = typeof body?.expiry === 'string' && body.expiry ? body.expiry : null
+	const rawBarcode = typeof body?.rawBarcode === 'string' && body.rawBarcode ? body.rawBarcode : null
+	const receivedOn = typeof body?.receivedOn === 'string' ? body.receivedOn : ''
+
+	if (!Number.isSafeInteger(productId) || Number(productId) <= 0
+		|| (lot !== null && lot.length > 120)
+		|| (serial !== null && serial.length > 120)
+		|| (expiry !== null && !isIsoDate(expiry))
+		|| (rawBarcode !== null && rawBarcode.length > 1024)
+		|| !isIsoDate(receivedOn)) {
+		return context.json({ error: 'invalid_receipt' }, 400)
+	}
+
+	const product = await context.env.DB.prepare('SELECT id FROM products WHERE id = ?')
+		.bind(Number(productId))
+		.first<{ id: number }>()
+	if (!product) return context.json({ error: 'product_not_found' }, 404)
+
+	await context.env.DB.batch([
+		context.env.DB.prepare(`
+			INSERT INTO packages (product_id, lot, serial, expiry, raw_barcode, implicit)
+			VALUES (?, ?, ?, ?, ?, 0)
+		`).bind(Number(productId), lot, serial, expiry, rawBarcode),
+		context.env.DB.prepare(`
+			INSERT INTO events (package_id, type, qty, occurred_on, recorded_at)
+			VALUES (last_insert_rowid(), 'received', 1, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		`).bind(receivedOn),
+	])
+	return context.json({ received: true }, 201)
+})
+
+app.post('/api/packages/:id/open', async (context) => {
+	const packageId = Number(context.req.param('id'))
+	const body = await context.req.json<{ occurredOn?: unknown }>().catch(() => null)
+	const occurredOn = typeof body?.occurredOn === 'string' ? body.occurredOn : ''
+	if (!Number.isSafeInteger(packageId) || packageId <= 0 || !isIsoDate(occurredOn)) {
+		return context.json({ error: 'invalid_open' }, 400)
+	}
+
+	const supply = await context.env.DB.prepare(`
+		SELECT packages.id, packages.product_id, packages.serial, packages.expiry, products.contains_qty,
+			categories.overlap_allowed,
+			COALESCE((
+				SELECT COALESCE(products_previous.contains_qty, 1) - (
+					SELECT COUNT(*) FROM events AS started
+					WHERE started.package_id = previous.id AND started.type = 'unit_started'
+				)
+				FROM packages AS previous
+				JOIN products AS products_previous ON products_previous.id = previous.product_id
+				WHERE previous.product_id = packages.product_id
+					AND EXISTS (SELECT 1 FROM events AS received WHERE received.package_id = previous.id AND received.type = 'received')
+					AND EXISTS (SELECT 1 FROM events AS opened WHERE opened.package_id = previous.id AND opened.type = 'opened')
+				ORDER BY (SELECT MAX(opened.id) FROM events AS opened
+					WHERE opened.package_id = previous.id AND opened.type = 'opened') DESC
+				LIMIT 1
+			), 0) AS previous_units_remaining,
+			EXISTS (SELECT 1 FROM events WHERE events.package_id = packages.id AND events.type = 'received') AS is_received,
+			EXISTS (SELECT 1 FROM events WHERE events.package_id = packages.id AND events.type = 'opened') AS is_open
+		FROM packages
+		JOIN products ON products.id = packages.product_id
+		JOIN categories ON categories.id = products.category_id
+		WHERE packages.id = ?
+	`).bind(packageId).first<{
+		id: number
+		product_id: number
+		serial: string | null
+		expiry: string | null
+		contains_qty: number | null
+		overlap_allowed: number
+		previous_units_remaining: number
+		is_received: number
+		is_open: number
+	}>()
+	if (!supply || !supply.is_received) return context.json({ error: 'package_not_found' }, 404)
+	if (supply.is_open) return context.json({ error: 'package_already_open' }, 409)
+	const activeUnit = supply.overlap_allowed ? null : await context.env.DB.prepare(`
+		SELECT started.package_id, started.unit_serial, started.unit_expiry
+		FROM events AS started
+		JOIN packages AS active_package ON active_package.id = started.package_id
+		JOIN products AS active_product ON active_product.id = active_package.product_id
+		JOIN products AS target_product ON target_product.id = ?
+		WHERE active_product.category_id = target_product.category_id
+			AND started.type = 'unit_started'
+			AND NOT EXISTS (
+				SELECT 1 FROM events AS ended
+				WHERE ended.package_id = started.package_id AND ended.type = 'unit_ended'
+					AND (ended.occurred_on > started.occurred_on
+						OR (ended.occurred_on = started.occurred_on AND ended.id > started.id))
+			)
+		ORDER BY started.occurred_on DESC, started.id DESC
+		LIMIT 1
+	`).bind(supply.product_id).first<{
+		package_id: number
+		unit_serial: string | null
+		unit_expiry: string | null
+	}>()
+
+	const plan = planPackageOpen({
+		packageId,
+		occurredOn,
+		previousUnitsRemaining: Math.max(0, supply.previous_units_remaining),
+		overlapAllowed: Boolean(supply.overlap_allowed),
+		activeUnit: activeUnit ? {
+			packageId: activeUnit.package_id,
+			serial: activeUnit.unit_serial ?? undefined,
+			expiry: activeUnit.unit_expiry ?? undefined,
+		} : undefined,
+		unitExpiry: supply.expiry ?? undefined,
+	})
+	if (plan.kind === 'confirmation_required') {
+		return context.json({ error: 'open_confirmation_required', remainingUnits: plan.remainingUnits }, 409)
+	}
+
+	await context.env.DB.batch(plan.events.map((event) => context.env.DB.prepare(`
+		INSERT INTO events (package_id, type, qty, occurred_on, recorded_at, unit_serial, unit_expiry, end_reason)
+		VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?, ?, ?)
+	`).bind(
+		event.packageId,
+		event.type,
+		event.qty,
+		event.occurredOn,
+		event.unitSerial ?? null,
+		event.unitExpiry ?? null,
+		event.endReason ?? null,
+	)))
+	return context.json({ opened: true, startedFirstUnit: plan.startFirstUnit }, 201)
+})
+
+app.get('/api/inventory', async (context) => {
+	const { results } = await context.env.DB.prepare(`
+		SELECT packages.id, packages.product_id, packages.lot, packages.serial, packages.expiry,
+			products.manufacturer, products.name AS product_name, products.gtin,
+			products.contains_qty, categories.name AS category_name,
+			(SELECT occurred_on FROM events
+				WHERE events.package_id = packages.id AND events.type = 'received'
+				ORDER BY events.id LIMIT 1) AS received_on,
+			EXISTS (SELECT 1 FROM events
+				WHERE events.package_id = packages.id AND events.type = 'opened') AS is_open
+		FROM packages
+		JOIN products ON products.id = packages.product_id
+		JOIN categories ON categories.id = products.category_id
+		WHERE EXISTS (SELECT 1 FROM events
+			WHERE events.package_id = packages.id AND events.type = 'received')
+		ORDER BY received_on DESC, packages.id DESC
+	`).all<{
+		id: number
+		product_id: number
+		lot: string | null
+		serial: string | null
+		expiry: string | null
+		manufacturer: string
+		product_name: string
+		gtin: string | null
+		contains_qty: number | null
+		category_name: string
+		received_on: string
+		is_open: number
+	}>()
+	return context.json({ packages: results })
 })
 
 export default app

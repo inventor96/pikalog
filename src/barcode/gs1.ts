@@ -1,5 +1,5 @@
 const GROUP_SEPARATOR = '\u001d'
-const SUPPORTED_APPLICATION_IDENTIFIERS = ['01', '10', '17', '21'] as const
+const SUPPORTED_APPLICATION_IDENTIFIERS = ['01', '10', '17', '20', '21', '91'] as const
 
 type ApplicationIdentifier = (typeof SUPPORTED_APPLICATION_IDENTIFIERS)[number]
 
@@ -7,6 +7,7 @@ export type ParsedBarcodeFields = {
 	gtin?: string
 	expiry?: string
 	lot?: string
+	productVariant?: string
 	serial?: string
 }
 
@@ -19,7 +20,11 @@ function normalize(raw: string): string {
 	return raw
 		.trim()
 		.replace(/^\](?:d2|C1|e0)/i, '')
+		.replace(/\((01|10|17|20|21|91)\)/g, (match, identifier: string, offset: number) =>
+			`${offset === 0 ? '' : GROUP_SEPARATOR}${identifier}`,
+		)
 		.replace(/<GS>/gi, GROUP_SEPARATOR)
+		.replace(/\{GS\}/gi, GROUP_SEPARATOR)
 		.replace(/\u001e/g, GROUP_SEPARATOR)
 }
 
@@ -28,9 +33,23 @@ function applicationIdentifierAt(value: string, index: number): ApplicationIdent
 	return SUPPORTED_APPLICATION_IDENTIFIERS.find((identifier) => identifier === candidate)
 }
 
+function hasPlausibleApplicationIdentifierValue(
+	value: string,
+	index: number,
+	identifier: ApplicationIdentifier,
+): boolean {
+	const dataStart = index + identifier.length
+	if (identifier === '01') return isValidGtin(value.slice(dataStart, dataStart + 14))
+	if (identifier === '17') return parseExpiry(value.slice(dataStart, dataStart + 6)) !== undefined
+	if (identifier === '20') return /^\d{2}$/.test(value.slice(dataStart, dataStart + 2))
+	if (identifier === '10' || identifier === '21') return value.length - dataStart >= 2
+	return false
+}
+
 function nextApplicationIdentifier(value: string, from: number): number {
 	for (let index = from; index < value.length - 1; index += 1) {
-		if (applicationIdentifierAt(value, index)) {
+		const identifier = applicationIdentifierAt(value, index)
+		if (identifier && hasPlausibleApplicationIdentifierValue(value, index, identifier)) {
 			return index
 		}
 	}
@@ -133,13 +152,27 @@ export function parseGs1Barcode(raw: string): BarcodeParseResult {
 			continue
 		}
 
+		if (identifier === '20') {
+			const productVariant = value.slice(cursor, cursor + 2)
+			if (!/^\d{2}$/.test(productVariant)) {
+				return { kind: 'invalid', raw, reason: 'Application identifier 20 has an invalid value length.' }
+			}
+			if (fields.productVariant !== undefined) {
+				return { kind: 'invalid', raw, reason: 'The barcode contains more than one product variant.' }
+			}
+			fields.productVariant = productVariant
+			cursor += 2
+			continue
+		}
+
 		const separatorIndex = value.indexOf(GROUP_SEPARATOR, cursor)
 		const nextAiIndex = nextApplicationIdentifier(value, cursor + 1)
 		const valueEnd = separatorIndex >= 0
 			? separatorIndex
-			: nextAiIndex >= 0 ? nextAiIndex : value.length
+			: identifier === '91' ? value.length
+				: nextAiIndex >= 0 ? nextAiIndex : value.length
 		const fieldValue = value.slice(cursor, valueEnd)
-		if (fieldValue.length === 0 || fieldValue.length > 20) {
+		if (fieldValue.length === 0 || fieldValue.length > (identifier === '91' ? 90 : 20)) {
 			return { kind: 'invalid', raw, reason: `Application identifier ${identifier} has an invalid value length.` }
 		}
 
@@ -152,7 +185,7 @@ export function parseGs1Barcode(raw: string): BarcodeParseResult {
 				return { kind: 'invalid', raw, reason: 'The barcode contains more than one lot number.' }
 			}
 			fields.lot = fieldValue
-		} else {
+		} else if (identifier === '21') {
 			if (fields.serial !== undefined) {
 				return { kind: 'invalid', raw, reason: 'The barcode contains more than one serial number.' }
 			}

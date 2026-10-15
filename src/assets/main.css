@@ -250,6 +250,15 @@
   background: var(--color-green-dark);
 }
 
+.scan-notice {
+  border-left: 3px solid var(--color-coral);
+  margin: 0 0 18px;
+  padding: 10px 13px;
+  background: var(--color-white);
+  color: var(--color-ink-soft);
+  font-size: 12px;
+}
+
 .refresh-button:hover:not(:disabled) {
   border-color: var(--color-green);
   color: var(--color-green-dark);
@@ -374,6 +383,273 @@
 
 .empty-code {
   color: var(--color-ink-faint);
+}
+
+.inventory-list {
+  border-top: 1px solid var(--color-line);
+}
+
+.inventory-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) 95px minmax(130px, auto) minmax(150px, auto) 68px;
+  min-height: 62px;
+  align-items: center;
+  gap: 16px;
+  border-bottom: 1px solid var(--color-line);
+  padding: 10px 2px;
+}
+
+.inventory-product {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.inventory-product strong {
+  overflow-wrap: anywhere;
+  color: var(--color-ink);
+  font-size: 13px;
+}
+
+.inventory-product span,
+.inventory-expiry,
+.inventory-meta {
+  color: var(--color-ink-soft);
+  font-size: 11px;
+}
+
+.inventory-quantity {
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.inventory-meta {
+  text-align: right;
+}
+
+.inventory-open,
+.inventory-open-state {
+  justify-self: end;
+  color: var(--color-accent);
+  font-size: 11px;
+}
+
+.inventory-open {
+  border: 1px solid var(--color-line);
+  background: transparent;
+  padding: 6px 9px;
+  cursor: pointer;
+}
+
+.inventory-open:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.inventory-open-state {
+  color: var(--color-ink-soft);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+}
+
+.receipt-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  background: rgb(24 39 34 / 52%);
+  padding: 20px;
+}
+
+.receipt-dialog {
+  width: min(100%, 520px);
+  max-height: min(92vh, 760px);
+  overflow: auto;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 7px;
+  background: var(--color-paper);
+  box-shadow: 0 18px 64px rgb(14 38 29 / 22%);
+  padding: 24px;
+}
+
+.receipt-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.receipt-heading .eyebrow {
+  margin-bottom: 5px;
+  font-size: 10px;
+}
+
+.receipt-heading h2 {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 21px;
+  font-weight: 650;
+}
+
+.receipt-close {
+  display: grid;
+  width: 36px;
+  aspect-ratio: 1;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 5px;
+  background: var(--color-white);
+  color: var(--color-ink-soft);
+  cursor: pointer;
+}
+
+.receipt-code {
+  overflow-wrap: anywhere;
+  border-block: 1px solid var(--color-line);
+  margin: 18px 0;
+  padding: 10px 0;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.receipt-warning {
+  margin: -8px 0 16px;
+  color: #8b5325;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.receipt-rescan {
+  margin: -8px 0 16px;
+  border: 1px solid var(--color-line-strong);
+  background: transparent;
+  color: var(--color-accent);
+  padding: 7px 11px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.receipt-warnings {
+  margin: -8px 0 16px;
+  padding-left: 18px;
+  color: #8b5325;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.receipt-form {
+  display: grid;
+  gap: 9px;
+}
+
+.receipt-form label {
+  color: var(--color-ink-soft);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.receipt-form input,
+.receipt-form select {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 5px;
+  background: var(--color-white);
+  padding: 0 10px;
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.receipt-form input:focus,
+.receipt-form select:focus {
+  outline: 2px solid var(--color-green-soft);
+  border-color: var(--color-green);
+}
+
+.receipt-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.receipt-field-grid > div {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+}
+
+.matched-product {
+  display: grid;
+  gap: 5px;
+  border-block: 1px solid var(--color-line);
+  padding: 12px 0;
+}
+
+.matched-product span {
+  color: var(--color-ink-faint);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.matched-product strong {
+  color: var(--color-ink);
+  font-size: 14px;
+}
+
+.matched-product small {
+  color: var(--color-ink-soft);
+  font-size: 11px;
+}
+
+.receipt-error {
+  margin: 3px 0 0;
+  color: #a24634;
+  font-size: 12px;
+}
+
+.receipt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 10px;
+  border-top: 1px solid var(--color-line);
+  padding-top: 15px;
+}
+
+.receipt-actions button {
+  min-height: 39px;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 5px;
+  padding: 0 13px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.receipt-actions button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.receipt-cancel {
+  background: var(--color-white);
+  color: var(--color-ink-soft);
+}
+
+.receipt-submit {
+  border-color: var(--color-green) !important;
+  background: var(--color-green);
+  color: white;
+}
+
+.receipt-submit:hover:not(:disabled) {
+  background: var(--color-green-dark);
 }
 
 .category-section {
@@ -669,6 +945,30 @@
   .empty-ledger {
     grid-template-columns: 42px minmax(0, 1fr);
     gap: 12px;
+
+  .inventory-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 7px 12px;
+  }
+
+  .inventory-product {
+    grid-column: 1 / -1;
+  }
+
+  .inventory-meta {
+    grid-column: 1 / -1;
+    text-align: left;
+  }
+
+  .inventory-open,
+  .inventory-open-state {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+
+  .receipt-dialog {
+    padding: 20px;
+  }
   }
 
   .empty-code {
