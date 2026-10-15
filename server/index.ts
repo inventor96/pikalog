@@ -234,9 +234,9 @@ app.get('/api/activity', async (context) => {
 			categories.overlap_allowed AS overlapAllowed
 		FROM events
 		JOIN packages ON packages.id = events.package_id
-		JOIN products ON products.id = packages.product_id
-		LEFT JOIN products AS unit_products ON unit_products.id = products.contains_product_id
-		JOIN categories ON categories.id = products.category_id
+		JOIN effective_products AS products ON products.id = packages.product_id
+		LEFT JOIN effective_products AS unit_products ON unit_products.id = products.contains_product_id
+		JOIN effective_categories AS categories ON categories.id = products.category_id
 		ORDER BY events.occurred_on, events.id
 	`).all<DurationLedgerEvent & {
 		packageId: number
@@ -309,8 +309,8 @@ app.get('/api/forecast', async (context) => {
 			SELECT products.id, products.category_id, categories.name AS category_name,
 				products.name, products.contains_product_id, products.rated_wear_days,
 				products.min_samples, products.expiry_rule, products.expiry_strictness
-			FROM products
-			JOIN categories ON categories.id = products.category_id
+			FROM effective_products AS products
+			JOIN effective_categories AS categories ON categories.id = products.category_id
 		`).all<{
 			id: number
 			category_id: number
@@ -336,7 +336,7 @@ app.get('/api/forecast', async (context) => {
 					WHERE events.package_id = packages.id AND events.type = 'received'
 					ORDER BY events.id LIMIT 1) AS received_on
 			FROM packages
-			JOIN products ON products.id = packages.product_id
+			JOIN effective_products AS products ON products.id = packages.product_id
 			WHERE EXISTS (SELECT 1 FROM events
 				WHERE events.package_id = packages.id AND events.type = 'received')
 		`).all<{
@@ -359,9 +359,9 @@ app.get('/api/forecast', async (context) => {
 			categories.overlap_allowed AS overlapAllowed
 			FROM events
 			JOIN packages ON packages.id = events.package_id
-			JOIN products ON products.id = packages.product_id
-			LEFT JOIN products AS unit_products ON unit_products.id = products.contains_product_id
-			JOIN categories ON categories.id = products.category_id
+			JOIN effective_products AS products ON products.id = packages.product_id
+			LEFT JOIN effective_products AS unit_products ON unit_products.id = products.contains_product_id
+			JOIN effective_categories AS categories ON categories.id = products.category_id
 			ORDER BY events.occurred_on, events.id
 		`).all<ForecastEvent & { productName: string }>(),
 		context.env.DB.prepare('SELECT value FROM settings WHERE key = ?')
@@ -425,25 +425,220 @@ app.get('/api/forecast', async (context) => {
 })
 
 app.get('/api/categories', async (context) => {
-	const { results } = await context.env.DB.prepare(
-		'SELECT id, key, name, overlap_allowed FROM categories ORDER BY id',
-	).all<Category>()
+	const includeHidden = context.req.query('includeHidden') === 'true'
+	const { results } = await context.env.DB.prepare(`
+		SELECT id, key, name, overlap_allowed, origin, hidden,
+			COALESCE((SELECT group_concat(field, ',') FROM category_overrides WHERE category_id = effective_categories.id), '') AS overridden_fields
+		FROM effective_categories
+		WHERE (? = 1 OR hidden = 0)
+		ORDER BY id
+	`).bind(Number(includeHidden)).all<Category & { origin: 'catalog' | 'custom'; hidden: number; overridden_fields: string }>()
 
 	return context.json({ categories: results })
 })
 
+app.post('/api/categories', async (context) => {
+	const body = await context.req.json<{ key?: unknown; name?: unknown; overlapAllowed?: unknown }>().catch(() => null)
+	const key = typeof body?.key === 'string' ? body.key.trim() : ''
+	const name = typeof body?.name === 'string' ? body.name.trim() : ''
+	if (!/^[a-z][a-z0-9_]{1,63}$/.test(key) || !name || name.length > 100
+		|| (body?.overlapAllowed !== undefined && typeof body.overlapAllowed !== 'boolean')) {
+		return context.json({ error: 'invalid_category' }, 400)
+	}
+	try {
+		const category = await context.env.DB.prepare(`
+			INSERT INTO categories (key, name, overlap_allowed, origin)
+			VALUES (?, ?, ?, 'custom')
+			RETURNING id
+		`).bind(key, name, Number(body?.overlapAllowed ?? false)).first<{ id: number }>()
+		return context.json({ category }, 201)
+	} catch {
+		return context.json({ error: 'category_key_already_exists' }, 409)
+	}
+})
+
+app.patch('/api/categories/:id', async (context) => {
+	const id = Number(context.req.param('id'))
+	const body = await context.req.json<{
+		name?: unknown
+		overlapAllowed?: unknown
+		hidden?: unknown
+	}>().catch(() => null)
+	if (!Number.isSafeInteger(id) || id <= 0 || !body
+		|| (body.name !== undefined && (typeof body.name !== 'string' || !body.name.trim() || body.name.trim().length > 100))
+		|| (body.overlapAllowed !== undefined && typeof body.overlapAllowed !== 'boolean')
+		|| (body.hidden !== undefined && typeof body.hidden !== 'boolean')
+		|| (body.name === undefined && body.overlapAllowed === undefined && body.hidden === undefined)) {
+		return context.json({ error: 'invalid_category' }, 400)
+	}
+	const category = await context.env.DB.prepare('SELECT id, name, overlap_allowed, origin FROM categories WHERE id = ?')
+		.bind(id).first<{ id: number; name: string; overlap_allowed: number; origin: 'catalog' | 'custom' }>()
+	if (!category) return context.json({ error: 'category_not_found' }, 404)
+	const statements: D1PreparedStatement[] = []
+	if (body.hidden !== undefined) statements.push(context.env.DB.prepare('UPDATE categories SET hidden = ? WHERE id = ?').bind(Number(body.hidden), id))
+	if (body.name !== undefined) {
+		const name = (body.name as string).trim()
+		if (category.origin === 'custom') statements.push(context.env.DB.prepare('UPDATE categories SET name = ? WHERE id = ?').bind(name, id))
+		else if (name === category.name) statements.push(context.env.DB.prepare("DELETE FROM category_overrides WHERE category_id = ? AND field = 'name'").bind(id))
+		else statements.push(context.env.DB.prepare(`
+			INSERT INTO category_overrides (category_id, field, value) VALUES (?, 'name', ?)
+			ON CONFLICT(category_id, field) DO UPDATE SET value = excluded.value
+		`).bind(id, name))
+	}
+	if (body.overlapAllowed !== undefined) {
+		const overlapAllowed = Number(body.overlapAllowed)
+		if (category.origin === 'custom') statements.push(context.env.DB.prepare('UPDATE categories SET overlap_allowed = ? WHERE id = ?').bind(overlapAllowed, id))
+		else if (overlapAllowed === category.overlap_allowed) statements.push(context.env.DB.prepare("DELETE FROM category_overrides WHERE category_id = ? AND field = 'overlap_allowed'").bind(id))
+		else statements.push(context.env.DB.prepare(`
+			INSERT INTO category_overrides (category_id, field, value) VALUES (?, 'overlap_allowed', ?)
+			ON CONFLICT(category_id, field) DO UPDATE SET value = excluded.value
+		`).bind(id, String(overlapAllowed)))
+	}
+	await context.env.DB.batch(statements)
+	return context.json({ updated: true })
+})
+
+app.post('/api/categories/:id/reset-overrides', async (context) => {
+	const id = Number(context.req.param('id'))
+	const category = await context.env.DB.prepare('SELECT origin FROM categories WHERE id = ?')
+		.bind(id).first<{ origin: 'catalog' | 'custom' }>()
+	if (!category) return context.json({ error: 'category_not_found' }, 404)
+	if (category.origin !== 'catalog') return context.json({ error: 'custom_category_has_no_overrides' }, 409)
+	await context.env.DB.prepare('DELETE FROM category_overrides WHERE category_id = ?').bind(id).run()
+	return context.json({ reset: true })
+})
+
+app.delete('/api/categories/:id', async (context) => {
+	const id = Number(context.req.param('id'))
+	const category = await context.env.DB.prepare('SELECT origin FROM categories WHERE id = ?')
+		.bind(id).first<{ origin: 'catalog' | 'custom' }>()
+	if (!category) return context.json({ error: 'category_not_found' }, 404)
+	if (category.origin !== 'custom') return context.json({ error: 'official_category_cannot_be_deleted' }, 409)
+	const inUse = await context.env.DB.prepare('SELECT id FROM effective_products WHERE category_id = ? LIMIT 1')
+		.bind(id).first<{ id: number }>()
+	if (inUse) return context.json({ error: 'category_in_use' }, 409)
+	await context.env.DB.batch([
+		context.env.DB.prepare('DELETE FROM category_overrides WHERE category_id = ?').bind(id),
+		context.env.DB.prepare('DELETE FROM categories WHERE id = ?').bind(id),
+	])
+	return context.json({ deleted: true })
+})
+
 app.get('/api/products', async (context) => {
+	const includeHidden = context.req.query('includeHidden') === 'true'
 	const { results } = await context.env.DB.prepare(`
 		SELECT products.id, products.category_id, categories.name AS category_name,
 			products.manufacturer, products.name, products.gtin,
 			products.contains_product_id, products.contains_qty, products.rated_wear_days,
-			products.min_samples, products.expiry_rule, products.expiry_strictness
-		FROM products
-	JOIN categories ON categories.id = products.category_id
-	ORDER BY categories.id, products.manufacturer, products.name
-	`).all<Product>()
+			products.min_samples, products.expiry_rule, products.expiry_strictness,
+			products.origin, products.hidden,
+			COALESCE((SELECT group_concat(field, ',') FROM product_overrides WHERE product_id = products.id), '') AS overridden_fields
+		FROM effective_products AS products
+		JOIN effective_categories AS categories ON categories.id = products.category_id
+		WHERE (? = 1 OR (products.hidden = 0 AND categories.hidden = 0))
+		ORDER BY categories.id, products.manufacturer, products.name
+	`).bind(Number(includeHidden)).all<Product & { origin: 'catalog' | 'custom'; hidden: number; overridden_fields: string }>()
 
 	return context.json({ products: results })
+})
+
+app.patch('/api/products/:id', async (context) => {
+	const id = Number(context.req.param('id'))
+	const body = await context.req.json<{
+		categoryId?: unknown
+		manufacturer?: unknown
+		name?: unknown
+		minSamples?: unknown
+		expiryRule?: unknown
+		expiryStrictness?: unknown
+		hidden?: unknown
+	}>().catch(() => null)
+	if (!Number.isSafeInteger(id) || id <= 0 || !body
+		|| (body.categoryId !== undefined && (!Number.isSafeInteger(body.categoryId) || Number(body.categoryId) <= 0))
+		|| (body.manufacturer !== undefined && (typeof body.manufacturer !== 'string' || !body.manufacturer.trim() || body.manufacturer.trim().length > 120))
+		|| (body.name !== undefined && (typeof body.name !== 'string' || !body.name.trim() || body.name.trim().length > 160))
+		|| (body.minSamples !== undefined && (!Number.isSafeInteger(body.minSamples) || Number(body.minSamples) < 1 || Number(body.minSamples) > 100))
+		|| (body.expiryRule !== undefined && !['finish_by', 'start_by', 'none'].includes(String(body.expiryRule)))
+		|| (body.expiryStrictness !== undefined && !['hard', 'soft'].includes(String(body.expiryStrictness)))
+		|| (body.hidden !== undefined && typeof body.hidden !== 'boolean')
+		|| !['categoryId', 'manufacturer', 'name', 'minSamples', 'expiryRule', 'expiryStrictness', 'hidden'].some((field) => body[field as keyof typeof body] !== undefined)) {
+		return context.json({ error: 'invalid_product' }, 400)
+	}
+	const product = await context.env.DB.prepare(`
+		SELECT id, category_id, manufacturer, name, min_samples, expiry_rule, expiry_strictness, origin
+		FROM products WHERE id = ?
+	`).bind(id).first<{
+		id: number
+		category_id: number
+		manufacturer: string
+		name: string
+		min_samples: number
+		expiry_rule: 'finish_by' | 'start_by' | 'none'
+		expiry_strictness: 'hard' | 'soft'
+		origin: 'catalog' | 'custom'
+	}>()
+	if (!product) return context.json({ error: 'product_not_found' }, 404)
+	const nextCategoryId = body.categoryId === undefined ? product.category_id : Number(body.categoryId)
+	if (body.categoryId !== undefined) {
+		const category = await context.env.DB.prepare('SELECT id FROM categories WHERE id = ?')
+			.bind(nextCategoryId).first<{ id: number }>()
+		if (!category) return context.json({ error: 'category_not_found' }, 400)
+	}
+	const fields: Array<[string, unknown, unknown]> = [
+		['category_id', body.categoryId === undefined ? undefined : nextCategoryId, product.category_id],
+		['manufacturer', body.manufacturer === undefined ? undefined : (body.manufacturer as string).trim(), product.manufacturer],
+		['name', body.name === undefined ? undefined : (body.name as string).trim(), product.name],
+		['min_samples', body.minSamples, product.min_samples],
+		['expiry_rule', body.expiryRule, product.expiry_rule],
+		['expiry_strictness', body.expiryStrictness, product.expiry_strictness],
+	]
+	const statements: D1PreparedStatement[] = []
+	if (body.hidden !== undefined) statements.push(context.env.DB.prepare('UPDATE products SET hidden = ? WHERE id = ?').bind(Number(body.hidden), id))
+	for (const [field, value, canonicalValue] of fields) {
+		if (value === undefined) continue
+		if (product.origin === 'custom') {
+			const column = field
+			statements.push(context.env.DB.prepare(`UPDATE products SET ${column} = ? WHERE id = ?`).bind(value, id))
+		} else if (value === canonicalValue) {
+			statements.push(context.env.DB.prepare('DELETE FROM product_overrides WHERE product_id = ? AND field = ?').bind(id, field))
+		} else {
+			statements.push(context.env.DB.prepare(`
+				INSERT INTO product_overrides (product_id, field, value) VALUES (?, ?, ?)
+				ON CONFLICT(product_id, field) DO UPDATE SET value = excluded.value
+			`).bind(id, field, String(value)))
+		}
+	}
+	await context.env.DB.batch(statements)
+	return context.json({ updated: true })
+})
+
+app.post('/api/products/:id/reset-overrides', async (context) => {
+	const id = Number(context.req.param('id'))
+	const product = await context.env.DB.prepare('SELECT origin FROM products WHERE id = ?')
+		.bind(id).first<{ origin: 'catalog' | 'custom' }>()
+	if (!product) return context.json({ error: 'product_not_found' }, 404)
+	if (product.origin !== 'catalog') return context.json({ error: 'custom_product_has_no_overrides' }, 409)
+	await context.env.DB.prepare('DELETE FROM product_overrides WHERE product_id = ?').bind(id).run()
+	return context.json({ reset: true })
+})
+
+app.delete('/api/products/:id', async (context) => {
+	const id = Number(context.req.param('id'))
+	const product = await context.env.DB.prepare('SELECT origin FROM products WHERE id = ?')
+		.bind(id).first<{ origin: 'catalog' | 'custom' }>()
+	if (!product) return context.json({ error: 'product_not_found' }, 404)
+	if (product.origin !== 'custom') return context.json({ error: 'official_product_cannot_be_deleted' }, 409)
+	const inUse = await context.env.DB.prepare(`
+		SELECT id FROM packages WHERE product_id = ?
+		UNION ALL SELECT id FROM products WHERE contains_product_id = ?
+		LIMIT 1
+	`).bind(id, id).first<{ id: number }>()
+	if (inUse) return context.json({ error: 'product_in_use' }, 409)
+	await context.env.DB.batch([
+		context.env.DB.prepare('DELETE FROM product_overrides WHERE product_id = ?').bind(id),
+		context.env.DB.prepare('DELETE FROM products WHERE id = ?').bind(id),
+	])
+	return context.json({ deleted: true })
 })
 
 app.post('/api/products', async (context) => {
@@ -493,7 +688,7 @@ app.post('/api/products', async (context) => {
 	if (!category) return context.json({ error: 'category_not_found' }, 400)
 	if (containsProductId !== null) {
 		const containedProduct = await context.env.DB.prepare(`
-			SELECT id FROM products
+			SELECT id FROM effective_products
 			WHERE id = ? AND category_id = ? AND contains_product_id IS NULL
 		`).bind(containsProductId, Number(categoryId)).first<{ id: number }>()
 		if (!containedProduct) return context.json({ error: 'contained_product_not_found' }, 400)
@@ -597,7 +792,7 @@ app.post('/api/packages/:id/open', async (context) => {
 					WHERE started.package_id = previous.id AND started.type = 'unit_started'
 				)
 				FROM packages AS previous
-				JOIN products AS products_previous ON products_previous.id = previous.product_id
+				JOIN effective_products AS products_previous ON products_previous.id = previous.product_id
 				WHERE previous.product_id = packages.product_id
 					AND EXISTS (SELECT 1 FROM events AS received WHERE received.package_id = previous.id AND received.type = 'received')
 					AND EXISTS (SELECT 1 FROM events AS opened WHERE opened.package_id = previous.id AND opened.type = 'opened')
@@ -608,8 +803,8 @@ app.post('/api/packages/:id/open', async (context) => {
 			EXISTS (SELECT 1 FROM events WHERE events.package_id = packages.id AND events.type = 'received') AS is_received,
 			EXISTS (SELECT 1 FROM events WHERE events.package_id = packages.id AND events.type = 'opened') AS is_open
 		FROM packages
-		JOIN products ON products.id = packages.product_id
-		JOIN categories ON categories.id = products.category_id
+		JOIN effective_products AS products ON products.id = packages.product_id
+		JOIN effective_categories AS categories ON categories.id = products.category_id
 		WHERE packages.id = ?
 	`).bind(packageId).first<{
 		id: number
@@ -628,8 +823,8 @@ app.post('/api/packages/:id/open', async (context) => {
 		SELECT started.package_id, started.unit_serial, started.unit_expiry
 		FROM events AS started
 		JOIN packages AS active_package ON active_package.id = started.package_id
-		JOIN products AS active_product ON active_product.id = active_package.product_id
-		JOIN products AS target_product ON target_product.id = ?
+		JOIN effective_products AS active_product ON active_product.id = active_package.product_id
+		JOIN effective_products AS target_product ON target_product.id = ?
 		WHERE active_product.category_id = target_product.category_id
 			AND started.type = 'unit_started'
 			AND NOT EXISTS (
@@ -700,7 +895,7 @@ app.post('/api/unit-scans', async (context) => {
 
 	const unitProduct = await context.env.DB.prepare(`
 		SELECT products.id, products.category_id, categories.overlap_allowed
-		FROM products JOIN categories ON categories.id = products.category_id
+		FROM effective_products AS products JOIN effective_categories AS categories ON categories.id = products.category_id
 		WHERE products.gtin = ?
 	`).bind(gtin).first<{
 		id: number
@@ -721,7 +916,7 @@ app.post('/api/unit-scans', async (context) => {
 				- COALESCE((SELECT SUM(qty) FROM events AS consumed
 					WHERE consumed.package_id = packages.id AND consumed.type IN ('unit_started', 'discarded')), 0)
 			) AS unitsRemaining
-		FROM packages JOIN products ON products.id = packages.product_id
+		FROM packages JOIN effective_products AS products ON products.id = packages.product_id
 		WHERE products.contains_product_id = ?
 			AND EXISTS (SELECT 1 FROM events AS received
 				WHERE received.package_id = packages.id AND received.type = 'received')
@@ -740,7 +935,7 @@ app.post('/api/unit-scans', async (context) => {
 		SELECT started.package_id, started.unit_serial, started.unit_expiry
 		FROM events AS started
 		JOIN packages AS active_package ON active_package.id = started.package_id
-		JOIN products AS active_product ON active_product.id = active_package.product_id
+		JOIN effective_products AS active_product ON active_product.id = active_package.product_id
 		WHERE active_product.category_id = ? AND started.type = 'unit_started'
 			AND NOT EXISTS (
 				SELECT 1 FROM events AS ended
@@ -813,8 +1008,8 @@ app.get('/api/inventory', async (context) => {
 			EXISTS (SELECT 1 FROM events
 				WHERE events.package_id = packages.id AND events.type = 'opened') AS is_open
 		FROM packages
-		JOIN products ON products.id = packages.product_id
-		JOIN categories ON categories.id = products.category_id
+		JOIN effective_products AS products ON products.id = packages.product_id
+		JOIN effective_categories AS categories ON categories.id = products.category_id
 		WHERE EXISTS (SELECT 1 FROM events
 			WHERE events.package_id = packages.id AND events.type = 'received')
 		ORDER BY received_on DESC, packages.id DESC

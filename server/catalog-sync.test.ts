@@ -103,7 +103,11 @@ describe('syncCatalog', () => {
 			expect.stringContaining('INSERT INTO products'),
 			expect.stringContaining('catalog_sync_state'),
 		]))
-		expect(db.batches[1]?.some((query) => query.includes("origin = 'custom'"))).toBe(false)
+		expect(db.batches[1]).toEqual(expect.arrayContaining([
+			expect.stringContaining('INSERT INTO product_overrides'),
+			expect.stringContaining("origin = 'catalog'"),
+			expect.stringContaining('WHERE NOT EXISTS (SELECT 1 FROM products WHERE catalog_key = ? OR gtin = ?)'),
+		]))
 		expect(remote.requests).toHaveLength(4)
 	})
 

@@ -13,6 +13,7 @@ type FakeProduct = {
 	min_samples: number
 	expiry_rule: 'finish_by' | 'start_by' | 'none'
 	expiry_strictness: 'hard' | 'soft'
+	origin: 'catalog' | 'custom'
 }
 
 type FakePackage = {
@@ -45,7 +46,7 @@ function createDatabase() {
 	let nextProductId = 1
 	let nextPackageId = 1
 	const categories = [
-		{ id: 1, key: 'cgm_sensor', name: 'CGM sensor', overlap_allowed: 0 },
+		{ id: 1, key: 'cgm_sensor', name: 'CGM sensor', overlap_allowed: 0, origin: 'catalog' as const },
 	]
 	const products: FakeProduct[] = []
 	const packages: FakePackage[] = []
@@ -108,11 +109,17 @@ function createDatabase() {
 					return { success: true }
 				},
 				async first<T>() {
+					if (query.includes('SELECT origin FROM categories WHERE id = ?')) {
+						return (categories.find((category) => category.id === Number(values[0])) ?? null) as T | null
+					}
+					if (query.includes('SELECT origin FROM products WHERE id = ?')) {
+						return (products.find((product) => product.id === Number(values[0])) ?? null) as T | null
+					}
 					if (query.includes('SELECT value FROM settings')) {
 						const value = settings.get(String(values[0]))
 						return value === undefined ? null : { value } as T
 					}
-					if (query.includes('FROM products JOIN categories') && query.includes('WHERE products.gtin = ?')) {
+					if ((query.includes('FROM products JOIN categories') || query.includes('FROM effective_products AS products JOIN effective_categories AS categories')) && query.includes('WHERE products.gtin = ?')) {
 						const product = products.find((item) => item.gtin === String(values[0]))
 						if (!product) return null
 						return {
@@ -181,11 +188,12 @@ function createDatabase() {
 							min_samples: Number(values[7]),
 							expiry_rule: values[8] as FakeProduct['expiry_rule'],
 							expiry_strictness: values[9] as FakeProduct['expiry_strictness'],
+							origin: 'custom',
 						}
 						products.push(product)
 						return product as T
 					}
-					if (query.includes('SELECT id FROM products')) {
+					if (query.includes('SELECT id FROM products') || query.includes('SELECT id FROM effective_products')) {
 						if (query.includes('WHERE gtin')) {
 							return (products.find((product) => product.gtin === String(values[0])) ?? null) as T | null
 						}
@@ -238,7 +246,7 @@ function createDatabase() {
 							}) as T[],
 						}
 					}
-					if (query.includes('FROM categories')) return { results: categories as T[] }
+					if (query.includes('FROM categories') || query.includes('FROM effective_categories')) return { results: categories as T[] }
 					if (query.includes('unit_serial FROM events')) {
 						return { results: events.filter((event) => event.unit_serial).map((event) => ({ unit_serial: event.unit_serial! })) as T[] }
 					}
@@ -261,7 +269,7 @@ function createDatabase() {
 							}),
 						}
 					}
-					if (query.includes('FROM products')) {
+					if (query.includes('FROM products') || query.includes('FROM effective_products')) {
 						return {
 							results: products.map((product) => ({
 								...product,
@@ -405,6 +413,32 @@ describe('Worker authentication routes', () => {
 		const response = await app.request('/api/overview', {}, env)
 
 		expect(response.status).toBe(401)
+	})
+
+	it('does not allow deleting official categories or products', async () => {
+		const env = createEnv({ password: 'household passphrase' })
+		const cookie = await authenticatedCookie(env)
+		env.DB.products.push({
+			id: 7,
+			category_id: 1,
+			manufacturer: 'Acme',
+			name: 'Sensor',
+			gtin: null,
+			contains_product_id: null,
+			contains_qty: 1,
+			rated_wear_days: null,
+			min_samples: 3,
+			expiry_rule: 'finish_by',
+			expiry_strictness: 'hard',
+			origin: 'catalog',
+		})
+		const headers = { Origin: 'http://localhost', Cookie: cookie }
+
+		const categoryResponse = await app.request('/api/categories/1', { method: 'DELETE', headers }, env)
+		const productResponse = await app.request('/api/products/7', { method: 'DELETE', headers }, env)
+
+		expect(categoryResponse.status).toBe(409)
+		expect(productResponse.status).toBe(409)
 	})
 
 	it('rejects cross-origin login requests', async () => {

@@ -633,13 +633,245 @@
   padding-top: 36px;
 }
 
+.catalog-management-section {
+  padding-top: 28px;
+}
+
+.catalog-management-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 14px;
+  border-top: 1px solid var(--color-line);
+  padding-top: 12px;
+  color: var(--color-ink-faint);
+  font-size: 11px;
+}
+
+.catalog-management-status strong {
+  color: var(--color-ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.catalog-management-error {
+  color: #914432;
+}
+
+.section-tools,
+.management-actions,
+.management-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.management-button {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 4px;
+  background: var(--color-white);
+  padding: 0 10px;
+  color: var(--color-ink-soft);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.management-button:hover:not(:disabled),
+.icon-action:hover {
+  background: #edf2ed;
+  color: var(--color-ink);
+}
+
+.management-button--primary {
+  border-color: var(--color-green);
+  background: var(--color-green);
+  color: white;
+}
+
+.management-button--primary:hover:not(:disabled) {
+  background: var(--color-green-dark);
+  color: white;
+}
+
+.management-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.management-error {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 20px;
+  border-left: 3px solid #a95035;
+  background: #fbf3ef;
+  padding: 11px 13px;
+  color: #783d2d;
+  font-size: 12px;
+}
+
+.management-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: end;
+  gap: 12px;
+  margin: 14px 0;
+  border-top: 1px solid var(--color-line);
+  border-bottom: 1px solid var(--color-line);
+  background: #f6f8f5;
+  padding: 15px;
+}
+
+.management-dialog {
+  width: min(100%, 680px);
+}
+
+.management-modal-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  border: 0;
+  background: transparent;
+  padding: 20px 0 0;
+}
+
+.product-management-form {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.management-form label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--color-ink-soft);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.management-form input:not([type="checkbox"]),
+.management-form select {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 4px;
+  background: var(--color-white);
+  padding: 0 9px;
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 12px;
+}
+
+.management-form input:focus,
+.management-form select:focus {
+  outline: 2px solid var(--color-green-soft);
+  border-color: var(--color-green);
+}
+
+.management-form .management-check {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 8px;
+}
+
+.management-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--color-green);
+}
+
+.management-form-actions {
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+}
+
+.managed-identity,
+.managed-badges {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.managed-identity {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.managed-badges {
+  gap: 5px;
+}
+
+.origin-badge,
+.state-badge {
+  display: inline-flex;
+  min-height: 19px;
+  align-items: center;
+  border-radius: 3px;
+  padding: 0 6px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1;
+}
+
+.origin-badge--catalog {
+  background: #e7efe9;
+  color: #355d45;
+}
+
+.origin-badge--custom {
+  background: #f4eadf;
+  color: #79542c;
+}
+
+.state-badge {
+  background: #f0e6e2;
+  color: #85432f;
+}
+
+.override-note {
+  color: #85432f;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.icon-action {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-ink-soft);
+  cursor: pointer;
+}
+
+.icon-action--danger {
+  color: #9b4935;
+}
+
+.is-hidden {
+  opacity: 0.62;
+}
+
 .category-list {
   border-top: 1px solid var(--color-line);
 }
 
 .category-row {
   display: grid;
-  grid-template-columns: 46px minmax(150px, 1fr) minmax(130px, 1fr) minmax(130px, auto);
+  grid-template-columns: 38px minmax(150px, 1fr) minmax(110px, 0.7fr) minmax(130px, auto) auto;
   min-height: 49px;
   align-items: center;
   gap: 12px;
@@ -681,7 +913,7 @@
 
 .product-row {
   display: grid;
-  grid-template-columns: minmax(170px, 1fr) minmax(0, 2.6fr);
+  grid-template-columns: minmax(170px, 1fr) minmax(0, 2.6fr) auto;
   align-items: center;
   gap: 18px;
   border-bottom: 1px solid var(--color-line);
@@ -855,37 +1087,6 @@
   gap: 9px 13px;
 }
 
-.catalog-status {
-  display: grid;
-  gap: 2px;
-  color: var(--color-ink-faint);
-  font-size: 9px;
-  text-align: right;
-}
-
-.catalog-status strong {
-  color: var(--color-ink-soft);
-  font-size: 10px;
-  font-weight: 600;
-}
-
-.catalog-sync-button {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border: 1px solid var(--color-line-strong);
-  border-radius: 5px;
-  background: var(--color-white);
-  color: var(--color-green-dark);
-  cursor: pointer;
-}
-
-.catalog-sync-button:disabled {
-  cursor: wait;
-  opacity: 0.6;
-}
-
 .projection-toggle input {
   width: 16px;
   height: 16px;
@@ -1034,7 +1235,7 @@
   }
 
   .configuration-page .category-row {
-    grid-template-columns: 34px minmax(0, 1.2fr) minmax(0, 1fr) minmax(120px, auto);
+    grid-template-columns: 28px minmax(0, 1.2fr) minmax(0, 0.8fr) minmax(120px, auto) auto;
   }
 
   .configuration-page .category-policy {
@@ -1222,7 +1423,7 @@
   }
 
   .configuration-page .category-row {
-    grid-template-columns: 28px minmax(0, 1fr);
+    grid-template-columns: 28px minmax(0, 1fr) auto;
     gap: 8px;
     padding: 8px 0;
   }
@@ -1231,6 +1432,25 @@
   .configuration-page .category-policy {
     grid-column: 2;
     justify-self: start;
+  }
+
+  .configuration-page .category-row .management-actions {
+    grid-column: 2 / -1;
+  }
+
+  .section-tools {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .management-form,
+  .product-management-form {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 12px;
+  }
+
+  .product-row .management-actions {
+    justify-content: flex-end;
   }
 
   .product-facts {

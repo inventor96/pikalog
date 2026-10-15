@@ -26,20 +26,11 @@ type CategoryForecast = {
   assumptions: string[]
 }
 
-type CatalogStatus = {
-  version: string | null
-  lastSyncedAt: string | null
-  status: 'not_synced' | 'seeded' | 'success' | 'error' | string
-  lastError: string | null
-}
-
 const router = useRouter()
 const categoryForecasts = ref<CategoryForecast[]>([])
 const includeProjectedReceipts = ref(true)
-const catalogStatus = ref<CatalogStatus>({ version: null, lastSyncedAt: null, status: 'not_synced', lastError: null })
 const isLoading = ref(false)
 const isSavingProjectionSetting = ref(false)
-const isSyncingCatalog = ref(false)
 const errorMessage = ref('')
 
 const hasProjectedReceipts = computed(() => categoryForecasts.value.some((forecast) => forecast.projectedReceipts.length > 0))
@@ -53,24 +44,17 @@ async function loadOutlook() {
   isLoading.value = true
   errorMessage.value = ''
   try {
-    const [forecastResponse, catalogStatusResponse] = await Promise.all([
-      fetch(`/api/forecast?today=${todayIsoDate()}`),
-      fetch('/api/catalog/status'),
-    ])
-    if (!forecastResponse.ok || !catalogStatusResponse.ok) {
-      if (forecastResponse.status === 401 || catalogStatusResponse.status === 401) {
+    const forecastResponse = await fetch(`/api/forecast?today=${todayIsoDate()}`)
+    if (!forecastResponse.ok) {
+      if (forecastResponse.status === 401) {
         await router.replace({ name: 'login' })
         return
       }
       throw new Error('Could not load the outlook.')
     }
-    const [forecastData, catalogStatusData] = await Promise.all([
-      forecastResponse.json() as Promise<{ categories: CategoryForecast[]; includeProjectedReceipts: boolean }>,
-      catalogStatusResponse.json() as Promise<CatalogStatus>,
-    ])
+    const forecastData = await forecastResponse.json() as { categories: CategoryForecast[]; includeProjectedReceipts: boolean }
     categoryForecasts.value = forecastData.categories
     includeProjectedReceipts.value = forecastData.includeProjectedReceipts
-    catalogStatus.value = catalogStatusData
   } catch {
     errorMessage.value = 'The outlook could not be loaded. Try again.'
   } finally {
@@ -104,30 +88,6 @@ async function saveProjectionSetting(event: Event) {
   }
 }
 
-async function syncCatalogNow() {
-  isSyncingCatalog.value = true
-  errorMessage.value = ''
-  try {
-    const response = await fetch('/api/catalog/sync', { method: 'POST' })
-    if (response.status === 401) {
-      await router.replace({ name: 'login' })
-      return
-    }
-    if (!response.ok) throw new Error('Catalog sync failed.')
-    await loadOutlook()
-  } catch {
-    errorMessage.value = 'Catalog sync failed. The last available catalog is still in use.'
-    try {
-      const response = await fetch('/api/catalog/status')
-      if (response.ok) catalogStatus.value = await response.json() as CatalogStatus
-    } catch {
-      return
-    }
-  } finally {
-    isSyncingCatalog.value = false
-  }
-}
-
 onMounted(loadOutlook)
 </script>
 
@@ -153,26 +113,6 @@ onMounted(loadOutlook)
           <h2>By category</h2>
         </div>
         <div class="forecast-controls">
-          <div class="catalog-status" role="status">
-            <strong>
-              {{ catalogStatus.status === 'error' && catalogStatus.lastError === 'catalog_schema_unsupported'
-                ? 'Update app to use catalog'
-                : catalogStatus.status === 'error' ? 'Catalog sync failed'
-                  : catalogStatus.version ? `Catalog ${catalogStatus.version}` : 'Bundled catalog' }}
-            </strong>
-            <span v-if="catalogStatus.lastSyncedAt">Synced {{ catalogStatus.lastSyncedAt.slice(0, 10) }}</span>
-            <span v-if="catalogStatus.lastError && catalogStatus.lastError !== 'catalog_schema_unsupported'">{{ catalogStatus.lastError }}</span>
-          </div>
-          <button
-            class="catalog-sync-button"
-            type="button"
-            :disabled="isSyncingCatalog"
-            aria-label="Sync catalog now"
-            title="Sync catalog now"
-            @click="syncCatalogNow"
-          >
-            <RefreshCw :size="15" :class="{ 'is-spinning': isSyncingCatalog }" aria-hidden="true" />
-          </button>
           <label class="projection-toggle">
             <input
               type="checkbox"
