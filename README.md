@@ -46,6 +46,38 @@ The Deploy to Cloudflare button creates a Git copy in your account, prompts for 
 
 For an existing deployment, set or update `PIKALOG_PASSWORD` with `npx wrangler secret put PIKALOG_PASSWORD`. Keep it private. The Worker fails closed until a password of at least 8 characters is configured.
 
+## Back up and restore
+
+Export the complete remote D1 database, including schema and data, with Wrangler. The output is plain SQL and contains your inventory and supply history; store it securely outside the repository and never commit it.
+
+```sh
+npx wrangler d1 export pikalog-db --remote --output="$HOME/pikalog-backup-$(date +%F).sql"
+```
+
+To restore an export, use a new or intentionally prepared database and review the SQL before executing it. Do not replay a full export blindly against a live database.
+
+```sh
+npx wrangler d1 execute pikalog-db --remote --file="$HOME/pikalog-backup.sql"
+```
+
+See Cloudflare's [D1 import and export guide](https://developers.cloudflare.com/d1/best-practices/import-export-data/) for options and limitations. Keep backups current and test restoration separately; Pikalog does not create or retain backups for you.
+
+## Update your deployment
+
+The catalog sync updates public catalog data only. It does not update the app code or database schema. To bring upstream app changes into your GitHub copy, review and merge them rather than replacing your repository; then test and deploy from your copy:
+
+```sh
+git remote add upstream https://github.com/inventor96/pikalog.git
+git fetch upstream
+git merge upstream/main
+npm ci
+npm test
+npm run build
+npm run deploy
+```
+
+Skip `git remote add` if you already have an `upstream` remote. Resolve and review merge conflicts before deploying. `npm run deploy` applies remote D1 migrations, builds the app, and deploys the Worker; it requires Wrangler access to your Cloudflare account and your `PIKALOG_PASSWORD` secret to be configured. Back up D1 before deploying schema changes.
+
 ## Privacy and intended use
 
 The Worker is the only app component that accesses D1. Catalog sync downloads public catalog files; it does not send inventory data upstream. Do not enter glucose, insulin, dose, or other health data. Pikalog is not a medical device and does not provide medical advice. Use supplies according to the manufacturer's instructions for use.
