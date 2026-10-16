@@ -11,6 +11,8 @@ type CategoryForecast = {
   stockUnits: number
   activeUnits: number
   expiredUnits: number
+  excludedUnits: number
+  softExpiryRiskUnits: number
   surplusPerQuarter: number | null
   projectedReceipts: Array<{
     productName: string
@@ -22,6 +24,7 @@ type CategoryForecast = {
   runOutDate: string | null
   nextPick: 'filler' | 'hard' | 'none'
   nextPickProduct: string | null
+  nextPickAtRisk: boolean
   fillerSlotsSafe: number
   wasteForecast: { preferred: number; tolerated: number }
   assumptions: string[]
@@ -133,7 +136,7 @@ onMounted(loadOutlook)
         <article v-for="forecast in categoryForecasts" :key="forecast.categoryId" class="forecast-row">
           <div class="forecast-category">
             <strong>{{ forecast.categoryName }}</strong>
-            <span>{{ forecast.stockUnits }} unstarted units · {{ forecast.activeUnits }} active</span>
+            <span>{{ forecast.stockUnits }} forecast-eligible units · {{ forecast.activeUnits }} active</span>
           </div>
           <div class="forecast-measure">
             <strong>{{ forecast.runOutDate ? formatShortDate(forecast.runOutDate) : '—' }}</strong>
@@ -141,7 +144,8 @@ onMounted(loadOutlook)
           </div>
           <div class="forecast-measure">
             <strong>{{ forecast.nextPickProduct ?? 'No pick' }}</strong>
-            <span>{{ forecast.nextPick === 'filler' ? `${forecast.fillerSlotsSafe} safe filler slots` : forecast.nextPick === 'hard' ? 'hard-expiry stock first' : 'no unexpired stock' }}</span>
+            <span>{{ forecast.nextPick === 'filler' ? `${forecast.fillerSlotsSafe} safe filler slots` : forecast.nextPick === 'hard' ? 'hard-expiry stock first' : 'No pick recommended' }}</span>
+            <span v-if="forecast.nextPickAtRisk">Selected soft-expiry item may be used past its date.</span>
           </div>
           <div class="forecast-measure">
             <strong>{{ forecast.wasteForecast.preferred }} / {{ forecast.wasteForecast.tolerated }}</strong>
@@ -162,7 +166,9 @@ onMounted(loadOutlook)
             </span>
           </div>
           <ul v-if="forecast.assumptions.length || forecast.expiredUnits" class="forecast-assumptions">
-            <li v-if="forecast.expiredUnits">{{ forecast.expiredUnits }} expired units excluded</li>
+            <li v-if="forecast.expiredUnits">
+              {{ forecast.expiredUnits }} past-date units; {{ forecast.excludedUnits }} excluded from forecast
+            </li>
             <li v-for="assumption in forecast.assumptions" :key="assumption">{{ assumption }}</li>
           </ul>
         </article>

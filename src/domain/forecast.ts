@@ -32,6 +32,8 @@ export type CategoryForecast = {
 	stockUnits: number
 	activeUnits: number
 	expiredUnits: number
+	excludedUnits: number
+	softExpiryRiskUnits: number
 	surplusPerQuarter: number | null
 	projectedReceipts: Array<{
 		productName: string
@@ -43,6 +45,7 @@ export type CategoryForecast = {
 	runOutDate: string | null
 	nextPick: 'filler' | 'hard' | 'none'
 	nextPickProduct: string | null
+	nextPickAtRisk: boolean
 	fillerSlotsSafe: number
 	wasteForecast: { preferred: number; tolerated: number }
 	assumptions: string[]
@@ -77,6 +80,18 @@ function effectiveWearDays(
 		return Math.max(1, Math.round(statistic.medianDays))
 	}
 	return product.ratedWearDays
+}
+
+function softExpiryRisk(
+	product: ForecastProduct,
+	expiryDay: number | null,
+	availableOn: number,
+	wearDays: number,
+): boolean {
+	if (product.expiryStrictness !== 'soft' || product.expiryRule === 'none' || expiryDay === null) return false
+	return product.expiryRule === 'finish_by'
+		? expiryDay < availableOn + wearDays
+		: expiryDay < availableOn
 }
 
 function currentActiveUnits(events: readonly ForecastEvent[], products: ReadonlyMap<number, ForecastProduct>): ActiveUnit[] {
@@ -147,8 +162,14 @@ export function calculateSupplyForecast(input: {
 	}
 
 	return [...categories.entries()].map(([categoryId, category]) => {
+		const stock = category.stock.filter((unit) => unit.product.expiryRule === 'none'
+			|| unit.product.expiryStrictness === 'soft'
+			|| unit.expiryDay === null
+			|| unit.expiryDay >= today)
+		const expiredUnits = category.stock.filter((unit) => unit.expiryDay !== null && unit.expiryDay < today).length
+		const excludedUnits = category.stock.length - stock.length
 		const allProducts = [
-			...category.stock.map((unit) => unit.product),
+			...stock.map((unit) => unit.product),
 			...category.active.map((unit) => unit.product),
 			...category.projected.flatMap((receipt) => {
 				const product = productById.get(receipt.productId)
@@ -162,8 +183,6 @@ export function calculateSupplyForecast(input: {
 		const fallbackWearDays = durations.length
 			? Math.max(1, Math.round(durations.reduce((sum, days) => sum + days, 0) / durations.length))
 			: null
-		const stock = category.stock.filter((unit) => unit.expiryDay === null || unit.expiryDay >= today)
-		const expiredUnits = category.stock.length - stock.length
 		const unitsWithWear = stock.flatMap((unit) => {
 			const wearDays = effectiveWearDays(unit.product, statistics)
 			return wearDays === null ? [] : [{ ...unit, wearDays }]
@@ -174,7 +193,7 @@ export function calculateSupplyForecast(input: {
 		})
 		const activeRemainingDays = activeWithWear.reduce((sum, unit) =>
 			sum + Math.max(0, unit.wearDays - (today - unit.startedDay)), 0)
-		const stockDaysBeforeExpiry = unitsWithWear.reduce((sum, unit) => sum + unit.wearDays, 0)
+		const onHandStockDays = unitsWithWear.reduce((sum, unit) => sum + unit.wearDays, 0)
 			+ activeRemainingDays
 		const projectedWithWear = category.projected.flatMap((receipt) => {
 			const product = productById.get(receipt.productId)
@@ -184,11 +203,9 @@ export function calculateSupplyForecast(input: {
 		})
 		const projectedStockDays = projectedWithWear.reduce((sum, projection) => {
 			const arrivalDay = dayNumber(projection.receipt.arrivalOn)
-			if (projection.expiryDay !== null && projection.expiryDay < arrivalDay) return sum
-			if (projection.product.expiryStrictness === 'soft'
-				&& projection.product.expiryRule === 'finish_by'
-				&& projection.expiryDay !== null
-				&& projection.expiryDay < arrivalDay + projection.wearDays) return sum
+			if (projection.expiryDay !== null && projection.expiryDay < arrivalDay
+				&& projection.product.expiryStrictness === 'hard'
+				&& projection.product.expiryRule !== 'none') return sum
 			return sum + projection.receipt.quantity * projection.wearDays
 		}, 0)
 		const receiptCadence = new Map<number, ProjectedReceipt>()
@@ -240,11 +257,7 @@ export function calculateSupplyForecast(input: {
 				})
 			}
 		}
-		const usableFillers = fillerUnits.filter((unit) =>
-			unit.expiryDay === null
-			|| unit.product.expiryRule !== 'finish_by'
-			|| unit.expiryDay >= nextUseDay + unit.wearDays,
-		)
+		const usableFillers = fillerUnits
 
 		const planner = fallbackWearDays === null || hasUnknownWear
 			? null
@@ -274,24 +287,35 @@ export function calculateSupplyForecast(input: {
 		const nextPickProduct = nextPick === 'filler'
 			? chosenFiller?.product.name ?? null
 			: nextPick === 'hard' ? chosenHard?.product.name ?? null : null
+		const nextPickAtRisk = nextPick === 'filler' && chosenFiller
+			? softExpiryRisk(chosenFiller.product, chosenFiller.expiryDay, nextUseDay, chosenFiller.wearDays)
+			: false
+		const softExpiryRiskUnits = unitsWithWear.filter((unit) =>
+			softExpiryRisk(unit.product, unit.expiryDay, nextUseDay, unit.wearDays),
+		).length + projectedWithWear.reduce((sum, projection) => {
+			if (projection.product.expiryStrictness !== 'soft') return sum
+			const availableOn = Math.max(nextUseDay, dayNumber(projection.receipt.arrivalOn))
+			return softExpiryRisk(projection.product, projection.expiryDay, availableOn, projection.wearDays)
+				? sum + projection.receipt.quantity
+				: sum
+		}, 0)
 		const preferredWaste = planner?.wasteForecast.preferred ?? 0
 		const stockDays = fallbackWearDays === null || hasUnknownWear
 			? null
-			: Math.max(0, stockDaysBeforeExpiry + projectedStockDays - preferredWaste * fallbackWearDays)
+			: Math.max(0, onHandStockDays + projectedStockDays - preferredWaste * fallbackWearDays)
 		const assumptions = planner?.assumptions ?? []
 		if (category.active.length) assumptions.push('Run-out includes estimated remaining wear for active units.')
 		if (category.projected.length) {
 			assumptions.push('Projected arrivals use median historical intervals, quantities, and observed shelf life; they are not confirmed supply.')
 			if (category.projected.some((receipt) => productById.get(receipt.productId)?.expiryStrictness === 'soft')) {
-				assumptions.push('Future soft-expiry receipts are included in stock days but not safe filler slots.')
+				assumptions.push('Projected soft-expiry receipts are included in stock days but are not yet on-hand filler slots.')
 			}
 		}
-		if (expiredUnits) assumptions.push('Expired stock is excluded from stock days and pick recommendations.')
+		if (softExpiryRiskUnits) {
+			assumptions.push(`${softExpiryRiskUnits} soft-expiry units may pass their date before expected use; they remain included as at-risk supply.`)
+		}
 		if (hasUnknownWear) {
 			assumptions.push('Some units lack both rated wear and enough completed samples for a duration estimate.')
-		}
-		if (category.stock.some((unit) => unit.product.expiryStrictness === 'soft' && unit.expiryDay !== null)) {
-			assumptions.push('Future soft-expiry losses are not fully simulated in the run-out date.')
 		}
 		if (category.active.some((unit) => unit.event.overlapAllowed)) {
 			assumptions.push('Overlapping active units are approximated as sequential wear for the run-out estimate.')
@@ -303,6 +327,8 @@ export function calculateSupplyForecast(input: {
 			stockUnits,
 			activeUnits: category.active.length,
 			expiredUnits,
+			excludedUnits,
+			softExpiryRiskUnits,
 			surplusPerQuarter: planner?.surplusPerQuarter ?? null,
 			projectedReceipts: category.projected.map((receipt) => ({
 				productName: productById.get(receipt.productId)?.name ?? 'Unknown product',
@@ -314,6 +340,7 @@ export function calculateSupplyForecast(input: {
 			runOutDate: stockDays === null ? null : isoDate(today + Math.ceil(stockDays)),
 			nextPick,
 			nextPickProduct,
+			nextPickAtRisk,
 			fillerSlotsSafe: planner?.fillerSlotsSafe ?? 0,
 			wasteForecast: planner?.wasteForecast ?? { preferred: 0, tolerated: 0 },
 			assumptions,

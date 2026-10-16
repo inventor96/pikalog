@@ -96,10 +96,13 @@ describe('calculateSupplyForecast', () => {
 		})
 	})
 
-	it('reports preferred finish-by waste and excludes expired units from picks', () => {
+	it('reports preferred finish-by waste and excludes past-date hard-expiry stock', () => {
+		const productsWithHardG4 = products.map((product) => product.id === 2
+			? { ...product, expiryStrictness: 'hard' as const }
+			: product)
 		const [forecast] = calculateSupplyForecast({
 			today: '2026-10-14',
-			products,
+			products: productsWithHardG4,
 			packages: [
 				{ id: 301, productId: 11, expiry: '2026-10-22', receivedOn: '2026-10-01', unitsRemaining: 1 },
 				{ id: 302, productId: 12, expiry: '2026-10-13', receivedOn: '2026-10-01', unitsRemaining: 1 },
@@ -111,13 +114,14 @@ describe('calculateSupplyForecast', () => {
 		expect(forecast).toMatchObject({
 			stockUnits: 1,
 			expiredUnits: 1,
+			excludedUnits: 1,
 			nextPick: 'hard',
 			nextPickProduct: 'Instinct',
 			wasteForecast: { preferred: 1, tolerated: 0 },
 		})
 	})
 
-	it('does not recommend stock that expires before it can be used', () => {
+	it('keeps soft-expiry stock available as an at-risk filler', () => {
 		const forecasts = calculateSupplyForecast({
 			today: '2026-10-14',
 			products,
@@ -140,9 +144,32 @@ describe('calculateSupplyForecast', () => {
 		})
 
 		expect(forecasts[0]).toMatchObject({
-			nextPick: 'none',
-			nextPickProduct: null,
-			fillerSlotsSafe: 0,
+			nextPick: 'filler',
+			nextPickProduct: 'G4',
+			nextPickAtRisk: true,
+			softExpiryRiskUnits: 1,
+			fillerSlotsSafe: 1,
+		})
+	})
+
+	it('keeps past-date stock forecast-eligible when expiry is not a planning constraint', () => {
+		const productsWithoutExpiryConstraint = products.map((product) => product.id === 1
+			? { ...product, expiryRule: 'none' as const }
+			: product)
+		const [forecast] = calculateSupplyForecast({
+			today: '2026-10-14',
+			products: productsWithoutExpiryConstraint,
+			packages: [{ id: 451, productId: 11, expiry: '2026-10-13', receivedOn: '2026-10-01', unitsRemaining: 1 }],
+			events: [],
+			durationStatistics: [],
+		})
+
+		expect(forecast).toMatchObject({
+			stockUnits: 1,
+			expiredUnits: 1,
+			excludedUnits: 0,
+			nextPick: 'filler',
+			nextPickProduct: 'Instinct',
 		})
 	})
 
@@ -171,7 +198,7 @@ describe('calculateSupplyForecast', () => {
 	})
 
 	it('plans projected hard-expiry units from their estimated arrival date', () => {
-		const [forecast] = calculateSupplyForecast({
+		const forecast = calculateSupplyForecast({
 			today: '2026-10-14',
 			products,
 			packages: [],
@@ -184,7 +211,7 @@ describe('calculateSupplyForecast', () => {
 				quantity: 1,
 				intervalDays: 30,
 			}],
-		})
+		})[0]!
 
 		expect(forecast).toMatchObject({
 			projectedReceipts: [{
@@ -196,6 +223,31 @@ describe('calculateSupplyForecast', () => {
 			wasteForecast: { preferred: 1, tolerated: 0 },
 			stockDays: 0,
 		})
+	})
+
+	it('includes projected soft stock in stock days and flags its expiry risk', () => {
+		const forecast = calculateSupplyForecast({
+			today: '2026-10-14',
+			products,
+			packages: [],
+			events: [],
+			durationStatistics: [],
+			projectedReceipts: [{
+				productId: 2,
+				arrivalOn: '2026-10-15',
+				expiry: '2026-10-18',
+				quantity: 1,
+				intervalDays: 30,
+			}],
+		})[0]!
+
+		expect(forecast).toMatchObject({
+			stockDays: 7,
+			softExpiryRiskUnits: 1,
+		})
+		expect(forecast.assumptions).toContain(
+			'Projected soft-expiry receipts are included in stock days but are not yet on-hand filler slots.',
+		)
 	})
 
 	it('reports quarterly over-supply from inferred arrival cadence', () => {

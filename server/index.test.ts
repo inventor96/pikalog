@@ -962,6 +962,47 @@ describe('Worker authentication routes', () => {
 		])
 	})
 
+	it('records a past-date unit scan without rejecting it at the API layer', async () => {
+		const env = createEnv({ password: 'household passphrase' })
+		const cookie = await authenticatedCookie(env)
+		const unitResponse = await app.request('/api/products', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ categoryId: 1, manufacturer: 'Acme', name: 'Sensor', gtin: '00036000291452' }),
+		}, env)
+		const unitData = await unitResponse.json() as { product: { id: number } }
+		const packResponse = await app.request('/api/products', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ categoryId: 1, manufacturer: 'Acme', name: 'Sensor pack', containsProductId: unitData.product.id, containsQty: 2 }),
+		}, env)
+		const packData = await packResponse.json() as { product: { id: number } }
+		await app.request('/api/receipts', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ productId: packData.product.id, lot: 'LOT-PAST', expiry: '2027-01-01', receivedOn: '2026-10-14' }),
+		}, env)
+
+		const response = await app.request('/api/unit-scans', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				gtin: '00036000291452',
+				lot: 'LOT-PAST',
+				expiry: '2026-10-14',
+				serial: 'UNIT-PAST',
+				occurredOn: '2026-10-15',
+			}),
+		}, env)
+
+		expect(response.status).toBe(201)
+		expect(env.DB.events).toMatchObject([
+			{ type: 'received' },
+			{ type: 'opened' },
+			{ type: 'unit_started', unit_serial: 'UNIT-PAST', unit_expiry: '2026-10-14' },
+		])
+	})
+
 	it('creates an implicit package when a unit scan has no eligible received pack', async () => {
 		const env = createEnv({ password: 'household passphrase' })
 		const cookie = await authenticatedCookie(env)

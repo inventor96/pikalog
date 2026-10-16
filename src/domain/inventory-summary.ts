@@ -5,6 +5,7 @@ export type InventorySummaryPackage = {
 	gtin: string | null
 	category_name: string
 	units_remaining: number
+	expiry: string | null
 }
 
 export type InventorySummaryProductInfo = {
@@ -24,6 +25,7 @@ export type InventoryProductSummary = {
 	gtin: string | null
 	itemCount: number
 	availableBoxCount: number
+	pastDateUnits: number
 }
 
 export type InventoryCategorySummary = {
@@ -31,12 +33,14 @@ export type InventoryCategorySummary = {
 	categoryName: string
 	itemCount: number
 	availableBoxCount: number
+	pastDateUnits: number
 	products: InventoryProductSummary[]
 }
 
 export function summarizeInventory(
 	packages: readonly InventorySummaryPackage[],
 	products: readonly InventorySummaryProductInfo[],
+	today: string,
 ): InventoryCategorySummary[] {
 	const productById = new Map(products.map((product) => [product.id, product]))
 	const categories = new Map<string, {
@@ -44,6 +48,7 @@ export function summarizeInventory(
 		categoryName: string
 		itemCount: number
 		availableBoxCount: number
+		pastDateUnits: number
 		products: Map<string, InventoryProductSummary>
 	}>()
 
@@ -63,12 +68,17 @@ export function summarizeInventory(
 				categoryName,
 				itemCount: 0,
 				availableBoxCount: 0,
+				pastDateUnits: 0,
 				products: new Map(),
 			}
 			categories.set(categoryKey, category)
 		}
 
 		category.itemCount += inventoryPackage.units_remaining
+		const pastDateUnits = inventoryPackage.expiry !== null && inventoryPackage.expiry < today
+			? inventoryPackage.units_remaining
+			: 0
+		category.pastDateUnits += pastDateUnits
 		if (inventoryPackage.units_remaining > 0) category.availableBoxCount += 1
 
 		const productGtin = product?.gtin ?? inventoryPackage.gtin
@@ -83,10 +93,12 @@ export function summarizeInventory(
 				gtin: productGtin,
 				itemCount: 0,
 				availableBoxCount: 0,
+				pastDateUnits: 0,
 			}
 			category.products.set(groupKey, productSummary)
 		}
 		productSummary.itemCount += inventoryPackage.units_remaining
+		productSummary.pastDateUnits += pastDateUnits
 		if (inventoryPackage.units_remaining > 0) productSummary.availableBoxCount += 1
 	}
 

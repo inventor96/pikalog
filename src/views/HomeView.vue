@@ -8,7 +8,7 @@ import type { BarcodeParseResult } from '@/barcode/ingest'
 import { buildCatalogSuggestionUrl } from '@/domain/catalog-contribution'
 import { formatShortDate } from '@/domain/date-format'
 import { summarizeInventory } from '@/domain/inventory-summary'
-import { matchPackageScan } from '@/domain/ledger'
+import { matchPackageScan, matchUnitScan } from '@/domain/ledger'
 
 type Category = {
   id: number
@@ -50,8 +50,8 @@ type InventoryPackage = {
 
 type LeftoverResolution = 'keep' | 'mark_used'
 type PendingOpeningAction =
-  | { kind: 'package'; packageId: number; startFirstUnit?: boolean; leftoverResolution?: LeftoverResolution }
-  | { kind: 'unit'; result: Extract<BarcodeParseResult, { kind: 'gs1' }>; markBoxOpened: boolean; leftoverResolution?: LeftoverResolution }
+  | { kind: 'package'; packageId: number; startFirstUnit?: boolean; leftoverResolution?: LeftoverResolution; expiryConfirmed?: boolean }
+  | { kind: 'unit'; result: Extract<BarcodeParseResult, { kind: 'gs1' }>; markBoxOpened: boolean; leftoverResolution?: LeftoverResolution; expiryConfirmed?: boolean }
 type OpeningPrompt = { kind: 'start-choice' | 'leftovers'; remainingUnits: number }
 
 const categories = ref<Category[]>([])
@@ -90,10 +90,44 @@ function todayIsoDate(): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 }
 
+function isPastExpiry(expiry: string | null | undefined): boolean {
+  return Boolean(expiry && expiry < todayIsoDate())
+}
+
+function expiryForUnitScan(result: Extract<BarcodeParseResult, { kind: 'gs1' }>): string | null {
+  if (result.fields.expiry) return result.fields.expiry
+  const unitProduct = products.value.find((product) => product.gtin === result.fields.gtin)
+  if (!unitProduct) return null
+  const candidates = packages.value.flatMap((pkg) => {
+    const packageProduct = products.value.find((product) => product.id === pkg.product_id)
+    if (!packageProduct?.contains_product_id) return []
+    return [{
+      id: pkg.id,
+      containsProductId: packageProduct.contains_product_id,
+      lot: pkg.lot ?? undefined,
+      expiry: pkg.expiry ?? undefined,
+      receivedOn: pkg.received_on,
+      unitsRemaining: pkg.units_remaining,
+      isOpen: Boolean(pkg.is_open),
+    }]
+  })
+  const match = matchUnitScan({
+    productId: unitProduct.id,
+    gtin: result.fields.gtin,
+    lot: result.fields.lot,
+    expiry: result.fields.expiry,
+    serial: result.fields.serial,
+  }, candidates)
+  return match.kind === 'matched'
+    ? packages.value.find((pkg) => pkg.id === match.packageId)?.expiry ?? null
+    : null
+}
+
 const todayLabel = computed(() =>
   formatShortDate(todayIsoDate()),
 )
-const inventorySummary = computed(() => summarizeInventory(packages.value, products.value))
+const inventorySummary = computed(() => summarizeInventory(packages.value, products.value, todayIsoDate()))
+const receiptExpiryIsPast = computed(() => isPastExpiry(receiptExpiry.value))
 const containedProducts = computed(() => products.value.filter((product) =>
   product.category_id === Number(categoryId.value) && product.contains_product_id === null,
 ))
@@ -233,11 +267,22 @@ async function startUnitFromScan(
   result: Extract<BarcodeParseResult, { kind: 'gs1' }>,
   markBoxOpened = true,
   leftoverResolution?: LeftoverResolution,
+  expiryConfirmed = false,
 ) {
   const gtin = result.fields.gtin
   if (!gtin) {
     scanNotice.value = 'This scan has no GTIN. Open a package from inventory instead.'
     return
+  }
+
+  const unitExpiry = expiryForUnitScan(result)
+  if (!expiryConfirmed && isPastExpiry(unitExpiry)) {
+    const confirmed = window.confirm(`This unit's expiry date (${formatShortDate(unitExpiry!)}) has passed. Start it anyway?`)
+    if (!confirmed) {
+      scanNotice.value = 'No changes were recorded.'
+      return
+    }
+    expiryConfirmed = true
   }
 
   try {
@@ -270,7 +315,7 @@ async function startUnitFromScan(
         return
       }
       if (data.error === 'leftover_confirmation_required') {
-        pendingOpeningAction.value = { kind: 'unit', result, markBoxOpened }
+        pendingOpeningAction.value = { kind: 'unit', result, markBoxOpened, expiryConfirmed }
         openingPrompt.value = { kind: 'leftovers', remainingUnits: data.remainingUnits }
         return
       }
@@ -345,8 +390,22 @@ function closeScanner() {
   }
 }
 
-async function openPackage(packageId: number, startFirstUnit?: boolean, leftoverResolution?: LeftoverResolution) {
+async function openPackage(
+  packageId: number,
+  startFirstUnit?: boolean,
+  leftoverResolution?: LeftoverResolution,
+  expiryConfirmed = false,
+) {
   if (openingPackageId.value !== null) return
+  const inventoryPackage = packages.value.find((pkg) => pkg.id === packageId)
+  if (!expiryConfirmed && isPastExpiry(inventoryPackage?.expiry)) {
+    const confirmed = window.confirm(`This package's expiry date (${formatShortDate(inventoryPackage!.expiry!)}) has passed. Open it anyway?`)
+    if (!confirmed) {
+      scanNotice.value = 'No changes were recorded.'
+      return
+    }
+    expiryConfirmed = true
+  }
   openingPackageId.value = packageId
   scanNotice.value = ''
   try {
@@ -362,7 +421,7 @@ async function openPackage(packageId: number, startFirstUnit?: boolean, leftover
     if (response.status === 409) {
       const data = await response.json() as { error: string; remainingUnits: number }
       if (data.error === 'start_choice_required' || data.error === 'leftover_confirmation_required') {
-        pendingOpeningAction.value = { kind: 'package', packageId, startFirstUnit }
+        pendingOpeningAction.value = { kind: 'package', packageId, startFirstUnit, expiryConfirmed }
         openingPrompt.value = {
           kind: data.error === 'start_choice_required' ? 'start-choice' : 'leftovers',
           remainingUnits: data.remainingUnits,
@@ -392,16 +451,18 @@ function cancelOpeningPrompt() {
 async function chooseStartFirstUnit() {
   const action = pendingOpeningAction.value
   openingPrompt.value = null
-  if (action?.kind === 'package') await openPackage(action.packageId, startFirstUnitChoice.value)
+  if (action?.kind === 'package') {
+    await openPackage(action.packageId, startFirstUnitChoice.value, undefined, action.expiryConfirmed)
+  }
 }
 
 async function resolveLeftovers(resolution: LeftoverResolution) {
   const action = pendingOpeningAction.value
   openingPrompt.value = null
   if (action?.kind === 'package') {
-    await openPackage(action.packageId, action.startFirstUnit, resolution)
+    await openPackage(action.packageId, action.startFirstUnit, resolution, action.expiryConfirmed)
   } else if (action?.kind === 'unit') {
-    await startUnitFromScan(action.result, action.markBoxOpened, resolution)
+    await startUnitFromScan(action.result, action.markBoxOpened, resolution, action.expiryConfirmed)
   }
 }
 
@@ -528,6 +589,7 @@ onMounted(loadDashboard)
               <th scope="col">Category / individual product</th>
               <th scope="col">Items on hand</th>
               <th scope="col">Available boxes</th>
+              <th scope="col">Past-date units</th>
             </tr>
           </thead>
           <tbody v-for="category in inventorySummary" :key="category.categoryId ?? category.categoryName">
@@ -535,6 +597,7 @@ onMounted(loadDashboard)
               <th scope="row">{{ category.categoryName }}</th>
               <td>{{ category.itemCount }}</td>
               <td>{{ category.availableBoxCount }}</td>
+              <td>{{ category.pastDateUnits }}</td>
             </tr>
             <template v-if="category.products.length > 1">
               <tr v-for="product in category.products" :key="product.groupKey" class="inventory-product-row">
@@ -544,6 +607,7 @@ onMounted(loadDashboard)
                 </th>
                 <td>{{ product.itemCount }}</td>
                 <td>{{ product.availableBoxCount }}</td>
+                  <td>{{ product.pastDateUnits }}</td>
               </tr>
             </template>
           </tbody>
@@ -697,6 +761,9 @@ onMounted(loadDashboard)
               <input id="receipt-expiry" v-model="receiptExpiry" type="date" />
             </div>
           </div>
+          <p v-if="receiptExpiryIsPast" class="receipt-warning" role="status">
+            This date has passed. The package will still be recorded and remains available for your decision.
+          </p>
           <label for="receipt-date">Received on</label>
           <input id="receipt-date" v-model="receivedOn" type="date" required />
 
