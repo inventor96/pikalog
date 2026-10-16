@@ -201,6 +201,9 @@ function createDatabase() {
 						}
 						return (products.find((product) => product.id === Number(values[0])) ?? null) as T | null
 					}
+					if (query.includes('SELECT id FROM packages WHERE serial = ?')) {
+						return (packages.find((pkg) => pkg.serial === String(values[0]) && !pkg.implicit) ?? null) as T | null
+					}
 					if (query.includes('SELECT lock_level, locked_until')) {
 						return (lockedUntil ? { lock_level: lockLevel, locked_until: lockedUntil } : null) as T | null
 					}
@@ -602,6 +605,11 @@ describe('Worker authentication routes', () => {
 				receivedOn: '2026-10-14',
 			}),
 		}, env)
+		const duplicateReceiptResponse = await app.request('/api/receipts', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ productId: productData.product.id, serial: 'SERIAL-9', receivedOn: '2026-10-14' }),
+		}, env)
 		const openResponse = await app.request(`/api/packages/${env.DB.packages[0]!.id}/open`, {
 			method: 'POST',
 			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
@@ -612,6 +620,7 @@ describe('Worker authentication routes', () => {
 
 		expect(productResponse.status).toBe(201)
 		expect(receiptResponse.status).toBe(201)
+		expect(duplicateReceiptResponse.status).toBe(409)
 		expect(openResponse.status).toBe(201)
 		expect(env.DB.packages).toHaveLength(1)
 		expect(env.DB.events).toMatchObject([
@@ -769,6 +778,17 @@ describe('Worker authentication routes', () => {
 				occurredOn: '2026-10-15',
 			}),
 		}, env)
+		const duplicateStartResponse = await app.request('/api/unit-scans', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				gtin: '00036000291452',
+				lot: 'LOT-U',
+				expiry: '2028-12-31',
+				serial: 'UNIT-4',
+				occurredOn: '2026-10-15',
+			}),
+		}, env)
 		const startData = await startResponse.json() as { started: boolean; opened: boolean; implicit: boolean; matchedBy: string }
 		const inventoryResponse = await app.request('/api/inventory', { headers: { Cookie: cookie } }, env)
 		const inventory = await inventoryResponse.json() as { packages: Array<Record<string, unknown>> }
@@ -786,6 +806,7 @@ describe('Worker authentication routes', () => {
 		expect(unitResponse.status).toBe(201)
 		expect(packResponse.status).toBe(201)
 		expect(startResponse.status).toBe(201)
+		expect(duplicateStartResponse.status).toBe(409)
 		expect(startData).toMatchObject({ started: true, opened: true, implicit: false, matchedBy: 'lot_expiry' })
 		expect(env.DB.events.filter((event) => event.type === 'opened')).toHaveLength(1)
 		expect(env.DB.events.filter((event) => event.type === 'unit_started'))
@@ -954,9 +975,15 @@ describe('Worker authentication routes', () => {
 			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
 			body: JSON.stringify({ gtin: '00036000291452', serial: 'UNIT-9', occurredOn: '2026-10-14' }),
 		}, env)
+		const duplicateResponse = await app.request('/api/unit-scans', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ gtin: '00036000291452', serial: 'UNIT-9', occurredOn: '2026-10-14' }),
+		}, env)
 		const result = await response.json() as { implicit: boolean; matchedBy: null }
 
 		expect(response.status).toBe(201)
+		expect(duplicateResponse.status).toBe(409)
 		expect(result).toMatchObject({ implicit: true, matchedBy: null })
 		expect(env.DB.packages).toMatchObject([{ implicit: 1, product_id: 1 }])
 		expect(env.DB.events).toMatchObject([{ type: 'unit_started', unit_serial: 'UNIT-9' }])

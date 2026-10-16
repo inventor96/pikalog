@@ -51,6 +51,7 @@ export type PackageScanCandidate = {
 	id: number
 	gtin: string | null
 	lot: string | null
+	serial?: string | null
 	expiry: string | null
 	receivedOn: string
 }
@@ -171,10 +172,11 @@ function oldestPackage(packages: readonly OpenPackageCandidate[]): OpenPackageCa
 }
 
 export function matchPackageScan(
-	scan: { gtin: string; lot?: string; expiry?: string },
+	scan: { gtin: string; lot?: string; serial?: string; expiry?: string },
 	packages: readonly PackageScanCandidate[],
 ): PackageScanCandidate[] {
-	const eligible = packages.filter((candidate) => candidate.gtin === scan.gtin)
+	const eligible = packages.filter((candidate) => candidate.gtin === scan.gtin
+		&& (!scan.serial || candidate.serial === scan.serial))
 	const tiers = [
 		scan.lot && scan.expiry
 			? eligible.filter((candidate) => candidate.lot === scan.lot && candidate.expiry === scan.expiry)

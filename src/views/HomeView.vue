@@ -156,17 +156,27 @@ async function handleBarcodeDetected(result: BarcodeParseResult, mode: 'receive'
       scanNotice.value = 'This code does not identify a received package. Open the package from inventory instead.'
       return
     }
-    const sortedMatches = matchPackageScan({
+    const scanIdentity = {
       gtin: result.fields.gtin,
       lot: result.fields.lot,
+      serial: result.fields.serial,
       expiry: result.fields.expiry,
-    }, packages.value.map((pkg) => ({
+    }
+    const packageCandidates = packages.value.map((pkg) => ({
       id: pkg.id,
       gtin: pkg.gtin,
       lot: pkg.lot,
+      serial: pkg.serial,
       expiry: pkg.expiry,
       receivedOn: pkg.received_on,
-    }))).map(({ id }) => packages.value.find((pkg) => pkg.id === id)!)
+    }))
+    const sortedMatches = matchPackageScan(scanIdentity, packageCandidates)
+      .map(({ id }) => packages.value.find((pkg) => pkg.id === id)!)
+    if (sortedMatches.length === 0 && result.fields.serial
+      && matchPackageScan({ gtin: result.fields.gtin }, packageCandidates).length > 0) {
+      scanNotice.value = 'No received package has this serial number.'
+      return
+    }
     const target = sortedMatches.find((pkg) => !pkg.is_open)
     if (target) {
       await openPackage(target.id)
@@ -254,6 +264,10 @@ async function startUnitFromScan(
     }
     if (response.status === 409) {
       const data = await response.json() as { error: string; remainingUnits: number }
+      if (data.error === 'serial_already_used') {
+        scanNotice.value = 'This serial number has already been started and cannot be scanned out again.'
+        return
+      }
       if (data.error === 'leftover_confirmation_required') {
         pendingOpeningAction.value = { kind: 'unit', result, markBoxOpened }
         openingPrompt.value = { kind: 'leftovers', remainingUnits: data.remainingUnits }
@@ -446,6 +460,10 @@ async function saveReceipt() {
     })
     if (receiptResponse.status === 401) {
       await router.replace({ name: 'login' })
+      return
+    }
+    if (receiptResponse.status === 409) {
+      receiptError.value = 'This serial number is already in inventory. Check the existing package before adding it again.'
       return
     }
     if (!receiptResponse.ok) throw new Error('Could not save this receipt.')

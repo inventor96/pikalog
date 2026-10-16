@@ -860,6 +860,12 @@ app.post('/api/receipts', async (context) => {
 		.bind(Number(productId))
 		.first<{ id: number }>()
 	if (!product) return context.json({ error: 'product_not_found' }, 404)
+	if (serial) {
+		const existingPackage = await context.env.DB.prepare(`
+			SELECT id FROM packages WHERE serial = ? AND implicit = 0
+		`).bind(serial).first<{ id: number }>()
+		if (existingPackage) return context.json({ error: 'serial_already_received' }, 409)
+	}
 
 	await context.env.DB.batch([
 		context.env.DB.prepare(`
@@ -992,6 +998,7 @@ app.post('/api/unit-scans', async (context) => {
 		expiry,
 		serial,
 	}, candidateRows, usedSerialRows.map((event) => event.unit_serial))
+	if (match.serialAlreadyUsed) return context.json({ error: 'serial_already_used' }, 409)
 	if (match.kind === 'matched' && markBoxOpened) {
 		const candidate = candidateRows.find((row) => row.id === match.packageId)
 		if (candidate && !candidate.isOpen) {

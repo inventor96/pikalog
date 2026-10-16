@@ -216,9 +216,9 @@ describe('matchUnitScan', () => {
 
 describe('matchPackageScan', () => {
 	const packages = [
-		{ id: 1, gtin: 'BOX-1', lot: 'LOT-A', expiry: '2027-01-01', receivedOn: '2026-01-02' },
-		{ id: 2, gtin: 'BOX-1', lot: 'LOT-B', expiry: '2027-01-01', receivedOn: '2026-01-01' },
-		{ id: 3, gtin: 'BOX-1', lot: 'LOT-A', expiry: '2027-02-01', receivedOn: '2025-12-01' },
+		{ id: 1, gtin: 'BOX-1', lot: 'LOT-A', serial: 'BOX-SERIAL-1', expiry: '2027-01-01', receivedOn: '2026-01-02' },
+		{ id: 2, gtin: 'BOX-1', lot: 'LOT-B', serial: 'BOX-SERIAL-2', expiry: '2027-01-01', receivedOn: '2026-01-01' },
+		{ id: 3, gtin: 'BOX-1', lot: 'LOT-A', serial: 'BOX-SERIAL-3', expiry: '2027-02-01', receivedOn: '2025-12-01' },
 	]
 
 	it('prefers an exact lot and expiry match', () => {
@@ -234,5 +234,14 @@ describe('matchPackageScan', () => {
 	it('uses the oldest expiry match when no lot matches', () => {
 		expect(matchPackageScan({ gtin: 'BOX-1', lot: 'LOT-X', expiry: '2027-01-01' }, packages).map(({ id }) => id))
 			.toEqual([2, 1])
+	})
+
+	it('uses a scanned serial as the package identity', () => {
+		expect(matchPackageScan({ gtin: 'BOX-1', lot: 'LOT-A', serial: 'BOX-SERIAL-2' }, packages).map(({ id }) => id))
+			.toEqual([2])
+	})
+
+	it('does not fall back to another package when the scanned serial is unknown', () => {
+		expect(matchPackageScan({ gtin: 'BOX-1', lot: 'LOT-A', serial: 'UNKNOWN' }, packages)).toEqual([])
 	})
 })
