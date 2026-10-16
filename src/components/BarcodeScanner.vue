@@ -16,9 +16,10 @@ const emit = defineEmits<{
 }>()
 
 const modeStorageKey = 'pikalog.scan-mode'
+const inputMethodStorageKey = 'pikalog.input-method'
 const scanMode = ref<ScanMode>(localStorage.getItem(modeStorageKey) === 'receive' ? 'receive' : 'open')
 const markBoxOpened = ref(true)
-const inputMethod = ref<'camera' | 'keyboard'>('camera')
+const inputMethod = ref<'camera' | 'keyboard'>(localStorage.getItem(inputMethodStorageKey) === 'keyboard' ? 'keyboard' : 'camera')
 const manualValue = ref('')
 const scanResult = ref<BarcodeParseResult | null>(null)
 const cameraError = ref('')
@@ -40,12 +41,13 @@ const resultTitle = computed(() => {
 })
 
 watch(scanMode, (value) => localStorage.setItem(modeStorageKey, value))
+watch(inputMethod, (value) => localStorage.setItem(inputMethodStorageKey, value))
 
 onMounted(async () => {
 	if (props.initialMode) scanMode.value = props.initialMode
 	await nextTick()
 	dialogElement.value?.focus()
-	void startCamera()
+	if (inputMethod.value === 'camera') void startCamera()
 })
 
 onUnmounted(stopCamera)
