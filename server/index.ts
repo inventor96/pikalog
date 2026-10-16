@@ -10,10 +10,12 @@ import {
 import { calculateSupplyForecast, type ForecastEvent } from '../src/domain/forecast'
 import { estimateProjectedReceipts } from '../src/domain/receipts'
 import { syncCatalog } from './catalog-sync'
+import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server'
 import { calculateDurationStatistics, type DurationLedgerEvent } from '../src/domain/statistics'
 import {
 	createSession,
 	hashClientAddress,
+	hashSessionToken,
 	isAuthConfigured,
 	LEGACY_SESSION_COOKIE,
 	passwordMatches,
@@ -22,6 +24,17 @@ import {
 	sessionCookieName,
 	verifySession,
 } from './auth'
+import {
+	consumeChallenge,
+	encodePublicKey,
+	generatePasskeyOptions,
+	isWebAuthnResponse,
+	listPasskeys,
+	resolveRelyingParty,
+	verifyPasskeyAuthentication,
+	verifyPasskeyRegistration,
+	type PasskeyCredential,
+} from './webauthn'
 
 type Category = {
 	id: number
@@ -159,6 +172,8 @@ const publicApiPaths = new Set([
 	'/api/health',
 	'/api/auth/session',
 	'/api/auth/login',
+	'/api/auth/passkeys/login/options',
+	'/api/auth/passkeys/login/verify',
 	'/api/auth/logout',
 ])
 const attemptWindowMs = 10 * 60 * 1000
@@ -166,6 +181,52 @@ const maxLoginAttempts = 8
 const initialLoginCooldownMs = 5 * 60 * 1000
 const maxLoginCooldownMs = 60 * 60 * 1000
 const sessionDurationSeconds = 12 * 60 * 60
+
+async function recordLoginAttempt(database: D1Database, clientKey: string, now: number): Promise<{
+	retryAfterSeconds?: number
+	unavailable?: boolean
+}> {
+	await database.prepare('DELETE FROM auth_login_attempts WHERE window_started_at < ?')
+		.bind(now - 24 * 60 * 60 * 1000)
+		.run()
+	const lock = await database.prepare(
+		'SELECT lock_level, locked_until FROM auth_login_attempts WHERE client_key = ?',
+	).bind(clientKey).first<{ lock_level: number; locked_until: number }>()
+	if (lock?.locked_until && lock.locked_until > now) {
+		return { retryAfterSeconds: Math.ceil((lock.locked_until - now) / 1000) }
+	}
+	if (lock?.locked_until) {
+		await database.prepare(`
+			UPDATE auth_login_attempts
+			SET attempts = 0, window_started_at = ?, locked_until = 0
+			WHERE client_key = ?
+		`).bind(now, clientKey).run()
+	}
+	const attempt = await database.prepare(`
+		INSERT INTO auth_login_attempts (client_key, window_started_at, attempts)
+		VALUES (?, ?, 1)
+		ON CONFLICT(client_key) DO UPDATE SET
+			window_started_at = CASE
+				WHEN auth_login_attempts.window_started_at <= ? THEN excluded.window_started_at
+				ELSE auth_login_attempts.window_started_at
+			END,
+			attempts = CASE
+				WHEN auth_login_attempts.window_started_at <= ? THEN 1
+				ELSE auth_login_attempts.attempts + 1
+			END
+		RETURNING window_started_at, attempts
+	`).bind(clientKey, now, now - attemptWindowMs, now - attemptWindowMs).first<{ attempts: number }>()
+	if (!attempt) return { unavailable: true }
+	if (attempt.attempts <= maxLoginAttempts) return {}
+	const lockLevel = lock?.lock_level ?? 0
+	const cooldown = Math.min(initialLoginCooldownMs * 2 ** lockLevel, maxLoginCooldownMs)
+	await database.prepare(`
+		UPDATE auth_login_attempts
+		SET lock_level = lock_level + 1, locked_until = ?
+		WHERE client_key = ?
+	`).bind(now + cooldown, clientKey).run()
+	return { retryAfterSeconds: Math.ceil(cooldown / 1000) }
+}
 
 app.use('*', async (context, next) => {
 	await next()
@@ -211,7 +272,210 @@ app.get('/api/auth/session', async (context) => {
 		context.env.DB,
 		getCookie(context, sessionCookieName(context.req.url)),
 	)
-	return context.json({ configured, authenticated })
+	let passkeysAvailable = false
+	try {
+		const relyingParty = resolveRelyingParty(context.req.url)
+		const passkeys = await context.env.DB.prepare(
+			'SELECT COUNT(*) AS count FROM auth_webauthn_credentials WHERE rp_id = ?',
+		).bind(relyingParty.id).first<{ count: number }>()
+		passkeysAvailable = (passkeys?.count ?? 0) > 0
+	} catch {
+		passkeysAvailable = false
+	}
+	return context.json({ configured, authenticated, passkeysAvailable })
+})
+
+app.post('/api/auth/passkeys/login/options', async (context) => {
+	if (!isAuthConfigured(context.env)) return context.json({ error: 'authentication_not_configured' }, 503)
+	if (context.req.header('Origin') !== new URL(context.req.url).origin) {
+		return context.json({ error: 'same_origin_required' }, 403)
+	}
+	let relyingParty
+	try {
+		relyingParty = resolveRelyingParty(context.req.url)
+	} catch {
+		return context.json({ error: 'passkeys_require_secure_context' }, 400)
+	}
+	const clientAddress = context.req.header('CF-Connecting-IP') ?? 'unknown'
+	const clientKey = `passkey:${await hashClientAddress(clientAddress)}`
+	const attempt = await recordLoginAttempt(context.env.DB, clientKey, Date.now())
+	if (attempt.unavailable) return context.json({ error: 'authentication_unavailable' }, 503)
+	if (attempt.retryAfterSeconds) {
+		context.header('Retry-After', String(attempt.retryAfterSeconds))
+		return context.json({ error: 'too_many_attempts' }, 429)
+	}
+	if (!(await listPasskeys(context.env.DB, relyingParty.id)).length) {
+		return context.json({ error: 'no_passkeys_registered' }, 404)
+	}
+	const options = await generatePasskeyOptions(context.env.DB, 'authentication', relyingParty.id)
+	return context.json(options)
+})
+
+app.post('/api/auth/passkeys/login/verify', async (context) => {
+	if (!isAuthConfigured(context.env)) return context.json({ error: 'authentication_not_configured' }, 503)
+	if (context.req.header('Origin') !== new URL(context.req.url).origin) {
+		return context.json({ error: 'same_origin_required' }, 403)
+	}
+	const body = await context.req.json<{ challenge?: unknown; response?: unknown }>().catch(() => null)
+	if (!body || typeof body.challenge !== 'string' || body.challenge.length > 128 || !isWebAuthnResponse(body.response)) {
+		return context.json({ error: 'invalid_request' }, 400)
+	}
+	let relyingParty
+	try {
+		relyingParty = resolveRelyingParty(context.req.url)
+	} catch {
+		return context.json({ error: 'passkeys_require_secure_context' }, 400)
+	}
+	const challenge = await consumeChallenge(context.env.DB, body.challenge, 'authentication', relyingParty.id, null)
+	if (!challenge) return context.json({ error: 'invalid_or_expired_challenge' }, 401)
+	const response = body.response as AuthenticationResponseJSON
+	const credential = await context.env.DB.prepare(`
+		SELECT credential_id, public_key, counter, transports, user_id, label,
+			device_type, backed_up, rp_id, created_at
+		FROM auth_webauthn_credentials WHERE credential_id = ? AND rp_id = ?
+	`).bind(response.id, relyingParty.id).first<PasskeyCredential>()
+	if (!credential) return context.json({ error: 'invalid_credentials' }, 401)
+	let verification
+	try {
+		verification = await verifyPasskeyAuthentication(response, body.challenge, relyingParty, credential)
+	} catch {
+		return context.json({ error: 'invalid_credentials' }, 401)
+	}
+	if (!verification.verified) return context.json({ error: 'invalid_credentials' }, 401)
+	await context.env.DB.prepare(`
+		UPDATE auth_webauthn_credentials
+		SET counter = ?, device_type = ?, backed_up = ?
+		WHERE credential_id = ? AND rp_id = ?
+	`).bind(
+		verification.authenticationInfo.newCounter,
+		verification.authenticationInfo.credentialDeviceType,
+		verification.authenticationInfo.credentialBackedUp ? 1 : 0,
+		credential.credential_id,
+		relyingParty.id,
+	).run()
+	const clientKey = `passkey:${await hashClientAddress(context.req.header('CF-Connecting-IP') ?? 'unknown')}`
+	await context.env.DB.prepare('DELETE FROM auth_login_attempts WHERE client_key = ?').bind(clientKey).run()
+	setCookie(context, sessionCookieName(context.req.url), await createSession(context.env.DB), {
+		httpOnly: true,
+		secure: new URL(context.req.url).protocol === 'https:',
+		sameSite: 'Strict',
+		path: '/',
+		maxAge: sessionDurationSeconds,
+	})
+	return context.json({ authenticated: true })
+})
+
+app.get('/api/auth/passkeys', async (context) => {
+	let relyingParty
+	try {
+		relyingParty = resolveRelyingParty(context.req.url)
+	} catch {
+		return context.json({ error: 'passkeys_require_secure_context' }, 400)
+	}
+	return context.json({ passkeys: await listPasskeys(context.env.DB, relyingParty.id) })
+})
+
+app.post('/api/auth/passkeys/register/options', async (context) => {
+	const body = await context.req.json<{ password?: unknown }>().catch(() => null)
+	if (!body || typeof body.password !== 'string' || body.password.length > 1024) {
+		return context.json({ error: 'invalid_request' }, 400)
+	}
+	const clientKey = `passkey:${await hashClientAddress(context.req.header('CF-Connecting-IP') ?? 'unknown')}`
+	const attempt = await recordLoginAttempt(context.env.DB, clientKey, Date.now())
+	if (attempt.unavailable) return context.json({ error: 'authentication_unavailable' }, 503)
+	if (attempt.retryAfterSeconds) {
+		context.header('Retry-After', String(attempt.retryAfterSeconds))
+		return context.json({ error: 'too_many_attempts' }, 429)
+	}
+	if (!await passwordMatches(body.password, context.env.PIKALOG_PASSWORD!)) {
+		return context.json({ error: 'invalid_credentials' }, 401)
+	}
+	await context.env.DB.prepare('DELETE FROM auth_login_attempts WHERE client_key = ?').bind(clientKey).run()
+	const sessionToken = getCookie(context, sessionCookieName(context.req.url))
+	if (!sessionToken) return context.json({ error: 'authentication_required' }, 401)
+	let relyingParty
+	try {
+		relyingParty = resolveRelyingParty(context.req.url)
+	} catch {
+		return context.json({ error: 'passkeys_require_secure_context' }, 400)
+	}
+	const options = await generatePasskeyOptions(
+		context.env.DB,
+		'registration',
+		relyingParty.id,
+		await hashSessionToken(sessionToken),
+	)
+	return context.json(options)
+})
+
+app.post('/api/auth/passkeys/register/verify', async (context) => {
+	const body = await context.req.json<{ challenge?: unknown; label?: unknown; response?: unknown }>().catch(() => null)
+	if (!body || typeof body.challenge !== 'string' || body.challenge.length > 128 || !isWebAuthnResponse(body.response)
+		|| (body.label !== undefined && (typeof body.label !== 'string' || body.label.length > 80))) {
+		return context.json({ error: 'invalid_request' }, 400)
+	}
+	const sessionToken = getCookie(context, sessionCookieName(context.req.url))
+	if (!sessionToken) return context.json({ error: 'authentication_required' }, 401)
+	let relyingParty
+	try {
+		relyingParty = resolveRelyingParty(context.req.url)
+	} catch {
+		return context.json({ error: 'passkeys_require_secure_context' }, 400)
+	}
+	const challenge = await consumeChallenge(
+		context.env.DB,
+		body.challenge,
+		'registration',
+		relyingParty.id,
+		await hashSessionToken(sessionToken),
+	)
+	if (!challenge?.userId) return context.json({ error: 'invalid_or_expired_challenge' }, 401)
+	let verification
+	try {
+		verification = await verifyPasskeyRegistration(body.response as RegistrationResponseJSON, body.challenge, relyingParty)
+	} catch {
+		return context.json({ error: 'invalid_credential' }, 400)
+	}
+	if (!verification.verified) return context.json({ error: 'invalid_credential' }, 400)
+	const registration = verification.registrationInfo
+	const credential = registration.credential
+	const label = typeof body.label === 'string' && body.label.trim() ? body.label.trim() : 'Passkey'
+	try {
+		await context.env.DB.prepare(`
+			INSERT INTO auth_webauthn_credentials
+				(credential_id, public_key, counter, transports, user_id, label, device_type, backed_up, rp_id, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`).bind(
+			credential.id,
+			encodePublicKey(credential.publicKey),
+			credential.counter,
+			JSON.stringify(credential.transports ?? []),
+			challenge.userId,
+			label,
+			registration.credentialDeviceType,
+			registration.credentialBackedUp ? 1 : 0,
+			relyingParty.id,
+			Date.now(),
+		).run()
+	} catch {
+		return context.json({ error: 'credential_already_registered' }, 409)
+	}
+	return context.json({ added: true })
+})
+
+app.delete('/api/auth/passkeys/:credentialId', async (context) => {
+	let relyingParty
+	try {
+		relyingParty = resolveRelyingParty(context.req.url)
+	} catch {
+		return context.json({ error: 'passkeys_require_secure_context' }, 400)
+	}
+	const credentialId = context.req.param('credentialId')
+	if (!/^[A-Za-z0-9_-]{1,1024}$/.test(credentialId)) return context.json({ error: 'invalid_request' }, 400)
+	await context.env.DB.prepare(
+		'DELETE FROM auth_webauthn_credentials WHERE credential_id = ? AND rp_id = ?',
+	).bind(credentialId, relyingParty.id).run()
+	return context.json({ removed: true })
 })
 
 app.post('/api/auth/login', async (context) => {

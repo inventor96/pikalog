@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { AlertCircle, Eye, EyeOff, Pencil, Plus, RefreshCw, RotateCcw, Save, Trash2, X } from '@lucide/vue'
+import { browserSupportsWebAuthn, startRegistration } from '@simplewebauthn/browser'
+import type { PublicKeyCredentialCreationOptionsJSON } from '@simplewebauthn/server'
 import { useRouter } from 'vue-router'
 import PageLayout from '@/components/PageLayout.vue'
 import { formatShortDateTime } from '@/domain/date-format'
@@ -40,6 +42,14 @@ type CatalogStatus = {
   lastError: string | null
 }
 
+type Passkey = {
+  credential_id: string
+  label: string
+  created_at: number
+  device_type: string
+  backed_up: number
+}
+
 const router = useRouter()
 const categories = ref<Category[]>([])
 const products = ref<Product[]>([])
@@ -52,6 +62,15 @@ const isSaving = ref(false)
 const catalogStatus = ref<CatalogStatus>({ version: null, lastSyncedAt: null, status: 'not_synced', lastError: null })
 const catalogStatusError = ref('')
 const isSyncingCatalog = ref(false)
+const passkeys = ref<Passkey[]>([])
+const passkeysLoading = ref(true)
+const passkeysError = ref('')
+const passkeyLabel = ref('')
+const passkeyPassword = ref('')
+const isAddingPasskey = ref(false)
+const removingPasskeyId = ref('')
+const supportsPasskeys = ref(false)
+const passkeyHostname = ref('')
 const categoryFormOpen = ref(false)
 const categoryEditorId = ref<number | null>(null)
 const productFormOpen = ref(false)
@@ -68,6 +87,81 @@ const productForm = ref({
 
 function overriddenFields(value: string): string[] {
   return value ? value.split(',') : []
+}
+
+async function loadPasskeys() {
+  passkeysLoading.value = true
+  passkeysError.value = ''
+  try {
+    const response = await fetch('/api/auth/passkeys', { cache: 'no-store' })
+    if (response.status === 401) {
+      await router.replace({ name: 'login' })
+      return
+    }
+    if (!response.ok) throw new Error('Passkeys could not be loaded.')
+    const data = await response.json() as { passkeys: Passkey[] }
+    passkeys.value = data.passkeys
+  } catch {
+    passkeysError.value = 'Passkeys could not be loaded. Try again.'
+  } finally {
+    passkeysLoading.value = false
+  }
+}
+
+async function addPasskey() {
+  if (!passkeyPassword.value || !supportsPasskeys.value || isAddingPasskey.value) return
+  isAddingPasskey.value = true
+  passkeysError.value = ''
+  try {
+    const optionsResponse = await fetch('/api/auth/passkeys/register/options', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: passkeyPassword.value }),
+    })
+    if (!optionsResponse.ok) {
+      if (optionsResponse.status === 401) throw new Error('That password did not match.')
+      if (optionsResponse.status === 429) throw new Error('Too many attempts. Wait before trying again.')
+      throw new Error('Passkey enrollment could not be started.')
+    }
+    const options = await optionsResponse.json() as PublicKeyCredentialCreationOptionsJSON
+    passkeyPassword.value = ''
+    const credential = await startRegistration({ optionsJSON: options })
+    const verification = await fetch('/api/auth/passkeys/register/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ challenge: options.challenge, label: passkeyLabel.value, response: credential }),
+    })
+    if (verification.status === 409) throw new Error('That passkey is already registered.')
+    if (!verification.ok) throw new Error('Passkey enrollment could not be completed.')
+    passkeyLabel.value = ''
+    await loadPasskeys()
+  } catch (error) {
+    passkeysError.value = error instanceof Error && (error.name === 'NotAllowedError' || error.name === 'AbortError')
+      ? 'Passkey enrollment was cancelled.'
+      : error instanceof Error ? error.message : 'Passkey enrollment could not be completed.'
+  } finally {
+    passkeyPassword.value = ''
+    isAddingPasskey.value = false
+  }
+}
+
+async function removePasskey(passkey: Passkey) {
+  if (!window.confirm(`Remove the passkey “${passkey.label}” from this hostname? The household password will still work.`)) return
+  removingPasskeyId.value = passkey.credential_id
+  passkeysError.value = ''
+  try {
+    const response = await fetch(`/api/auth/passkeys/${encodeURIComponent(passkey.credential_id)}`, { method: 'DELETE' })
+    if (response.status === 401) {
+      await router.replace({ name: 'login' })
+      return
+    }
+    if (!response.ok) throw new Error('The passkey could not be removed.')
+    await loadPasskeys()
+  } catch {
+    passkeysError.value = 'The passkey could not be removed. Try again.'
+  } finally {
+    removingPasskeyId.value = ''
+  }
 }
 
 async function send(path: string, method: string, body?: unknown): Promise<void> {
@@ -294,9 +388,12 @@ function expiryRuleLabel(rule: Product['expiry_rule']): string {
 }
 
 onMounted(() => {
+  passkeyHostname.value = window.location.hostname
+  supportsPasskeys.value = browserSupportsWebAuthn()
   void loadCategories()
   void loadProducts()
   void loadCatalogStatus()
+  void loadPasskeys()
 })
 </script>
 
@@ -333,6 +430,65 @@ onMounted(() => {
         <span v-if="catalogStatus.lastSyncedAt">Synced {{ formatShortDateTime(catalogStatus.lastSyncedAt) }}</span>
         <span v-if="catalogStatus.lastError && catalogStatus.lastError !== 'catalog_schema_unsupported'">{{ catalogStatus.lastError }}</span>
         <span v-if="catalogStatusError" class="catalog-management-error">{{ catalogStatusError }}</span>
+      </div>
+    </section>
+
+    <section class="ledger-section passkey-management-section">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">SECURITY</p>
+          <h2>Passkeys</h2>
+        </div>
+      </div>
+      <div class="catalog-management-status">
+        <strong>{{ passkeyHostname }}</strong>
+        <span>Passkeys are specific to this hostname. Your household password remains available for recovery.</span>
+      </div>
+      <div v-if="!supportsPasskeys" class="configuration-empty" role="status">
+        This browser cannot create passkeys. Open Configuration in a passkey-capable browser.
+      </div>
+      <form v-else class="management-form" @submit.prevent="addPasskey">
+        <label>
+          <span>Passkey name</span>
+          <input v-model="passkeyLabel" maxlength="80" placeholder="This device" autocomplete="off">
+        </label>
+        <label>
+          <span>Household password</span>
+          <input v-model="passkeyPassword" type="password" autocomplete="current-password" required>
+        </label>
+        <button type="submit" class="management-button management-button--primary" :disabled="isAddingPasskey || !passkeyPassword">
+          <Plus :size="15" aria-hidden="true" />{{ isAddingPasskey ? 'Waiting for passkey' : 'Add passkey' }}
+        </button>
+      </form>
+      <div v-if="passkeysError" class="load-error" role="alert">
+        <AlertCircle :size="17" aria-hidden="true" />
+        <span>{{ passkeysError }}</span>
+        <button type="button" @click="loadPasskeys">Retry</button>
+      </div>
+      <div v-else-if="passkeysLoading" class="category-loading" aria-live="polite">
+        <span class="status-dot"></span>Loading passkeys
+      </div>
+      <div v-else-if="passkeys.length === 0" class="configuration-empty">No passkeys registered for this hostname.</div>
+      <div v-else class="product-list passkey-list">
+        <article v-for="passkey in passkeys" :key="passkey.credential_id" class="product-row">
+          <div class="product-identity">
+            <strong>{{ passkey.label }}</strong>
+            <span>Added {{ formatShortDateTime(new Date(passkey.created_at).toISOString()) }}</span>
+          </div>
+          <span class="state-badge">{{ passkey.device_type === 'multiDevice' ? 'Synced passkey' : 'Device passkey' }}</span>
+          <div class="management-actions">
+            <button
+              type="button"
+              class="icon-action icon-action--danger"
+              :aria-label="`Remove ${passkey.label}`"
+              title="Remove passkey"
+              :disabled="removingPasskeyId === passkey.credential_id"
+              @click="removePasskey(passkey)"
+            >
+              <Trash2 :size="15" aria-hidden="true" />
+            </button>
+          </div>
+        </article>
       </div>
     </section>
 

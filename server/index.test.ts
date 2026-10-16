@@ -38,11 +38,30 @@ type FakeEvent = {
 	inferred?: number
 }
 
+type FakePasskey = {
+	credential_id: string
+	public_key: string
+	counter: number
+	transports: string
+	user_id: string
+	label: string
+	device_type: string
+	backed_up: number
+	rp_id: string
+	created_at: number
+}
+
+type FakeChallenge = {
+	challenge: string
+	purpose: string
+	rp_id: string
+	session_hash: string | null
+	user_id: string | null
+	expires_at: number
+}
+
 function createDatabase() {
-	let attempts = 0
-	let windowStartedAt = 0
-	let lockLevel = 0
-	let lockedUntil = 0
+	const loginAttempts = new Map<string, { attempts: number; window_started_at: number; lock_level: number; locked_until: number }>()
 	let nextProductId = 1
 	let nextPackageId = 1
 	const categories = [
@@ -53,8 +72,12 @@ function createDatabase() {
 	const events: FakeEvent[] = []
 	const settings = new Map<string, string>()
 	const sessions = new Map<string, { last_seen_at: number; expires_at: number }>()
+	const passkeys = new Map<string, FakePasskey>()
+	const challenges = new Map<string, FakeChallenge>()
 	return {
 		sessions,
+		passkeys,
+		challenges,
 		settings,
 		products,
 		packages,
@@ -71,22 +94,72 @@ function createDatabase() {
 					return values
 				},
 				async run() {
+					if (query.includes('INSERT INTO auth_webauthn_challenges')) {
+						challenges.set(String(values[0]), {
+							challenge: String(values[0]),
+							purpose: String(values[1]),
+							rp_id: String(values[2]),
+							session_hash: values[3] === null ? null : String(values[3]),
+							user_id: values[4] === null ? null : String(values[4]),
+							expires_at: Number(values[5]),
+						})
+					}
+					if (query.includes('DELETE FROM auth_webauthn_challenges WHERE expires_at')) {
+						for (const [challenge, record] of challenges) {
+							if (record.expires_at <= Number(values[0])) challenges.delete(challenge)
+						}
+					}
+					if (query.includes('INSERT INTO auth_webauthn_credentials')) {
+						const credential: FakePasskey = {
+							credential_id: String(values[0]),
+							public_key: String(values[1]),
+							counter: Number(values[2]),
+							transports: String(values[3]),
+							user_id: String(values[4]),
+							label: String(values[5]),
+							device_type: String(values[6]),
+							backed_up: Number(values[7]),
+							rp_id: String(values[8]),
+							created_at: Number(values[9]),
+						}
+						passkeys.set(`${credential.rp_id}:${credential.credential_id}`, credential)
+					}
+					if (query.includes('UPDATE auth_webauthn_credentials')) {
+						const credential = passkeys.get(`${String(values[4])}:${String(values[3])}`)
+						if (credential) {
+							credential.counter = Number(values[0])
+							credential.device_type = String(values[1])
+							credential.backed_up = Number(values[2])
+						}
+					}
+					if (query.includes('DELETE FROM auth_webauthn_credentials')) {
+						passkeys.delete(`${String(values[1])}:${String(values[0])}`)
+					}
 					if (query.includes('INSERT INTO settings')) {
 						settings.set('include_projected_receipts', String(values[0]))
 					}
 					if (query.includes('DELETE FROM auth_login_attempts WHERE client_key')) {
-						attempts = 0
-						lockLevel = 0
-						lockedUntil = 0
+						loginAttempts.delete(String(values[0]))
+					}
+					if (query.includes('DELETE FROM auth_login_attempts WHERE window_started_at')) {
+						for (const [clientKey, attempt] of loginAttempts) {
+							if (attempt.window_started_at < Number(values[0])) loginAttempts.delete(clientKey)
+						}
 					}
 					if (query.includes('UPDATE auth_login_attempts') && query.includes('attempts = 0')) {
-						attempts = 0
-						windowStartedAt = Number(values[0])
-						lockedUntil = 0
+						const attempt = loginAttempts.get(String(values[1]))
+						if (attempt) {
+							attempt.attempts = 0
+							attempt.window_started_at = Number(values[0])
+							attempt.locked_until = 0
+						}
 					}
 					if (query.includes('UPDATE auth_login_attempts') && query.includes('lock_level = lock_level + 1')) {
-						lockLevel += 1
-						lockedUntil = Number(values[0])
+						const attempt = loginAttempts.get(String(values[1]))
+						if (attempt) {
+							attempt.lock_level += 1
+							attempt.locked_until = Number(values[0])
+						}
 					}
 					if (query.includes('INSERT INTO auth_sessions')) {
 						sessions.set(String(values[0]), {
@@ -109,6 +182,19 @@ function createDatabase() {
 					return { success: true }
 				},
 				async first<T>() {
+					if (query.includes('DELETE FROM auth_webauthn_challenges') && query.includes('RETURNING user_id')) {
+						const record = challenges.get(String(values[0]))
+						if (!record || record.purpose !== String(values[1]) || record.rp_id !== String(values[2])
+							|| record.expires_at <= Number(values[3]) || record.session_hash !== (values[4] === null ? null : String(values[4]))) return null
+						challenges.delete(record.challenge)
+						return { user_id: record.user_id } as T
+					}
+					if (query.includes('SELECT COUNT(*) AS count FROM auth_webauthn_credentials')) {
+						return { count: [...passkeys.values()].filter((passkey) => passkey.rp_id === String(values[0])).length } as T
+					}
+					if (query.includes('FROM auth_webauthn_credentials WHERE credential_id = ?')) {
+						return (passkeys.get(`${String(values[1])}:${String(values[0])}`) ?? null) as T | null
+					}
 					if (query.includes('SELECT origin FROM categories WHERE id = ?')) {
 						return (categories.find((category) => category.id === Number(values[0])) ?? null) as T | null
 					}
@@ -205,25 +291,32 @@ function createDatabase() {
 						return (packages.find((pkg) => pkg.serial === String(values[0]) && !pkg.implicit) ?? null) as T | null
 					}
 					if (query.includes('SELECT lock_level, locked_until')) {
-						return (lockedUntil ? { lock_level: lockLevel, locked_until: lockedUntil } : null) as T | null
+						const attempt = loginAttempts.get(String(values[0]))
+						return (attempt ? { lock_level: attempt.lock_level, locked_until: attempt.locked_until } : null) as T | null
 					}
 					if (query.includes('SELECT last_seen_at, expires_at')) {
 						return (sessions.get(String(values[0])) ?? null) as T | null
 					}
 					if (query.includes('INSERT INTO auth_login_attempts')) {
+						const clientKey = String(values[0])
 						const now = Number(values[1])
 						const windowCutoff = Number(values[2])
-						if (windowStartedAt <= windowCutoff) {
-							windowStartedAt = now
-							attempts = 1
+						const previous = loginAttempts.get(clientKey)
+						if (!previous || previous.window_started_at <= windowCutoff) {
+							const attempt = { attempts: 1, window_started_at: now, lock_level: previous?.lock_level ?? 0, locked_until: previous?.locked_until ?? 0 }
+							loginAttempts.set(clientKey, attempt)
+							return { window_started_at: attempt.window_started_at, attempts: attempt.attempts } as T
 						} else {
-							attempts += 1
+							previous.attempts += 1
+							return { window_started_at: previous.window_started_at, attempts: previous.attempts } as T
 						}
-						return { window_started_at: windowStartedAt, attempts } as T
 					}
 					return null
 				},
 				async all<T>() {
+					if (query.includes('FROM auth_webauthn_credentials WHERE rp_id = ?')) {
+						return { results: [...passkeys.values()].filter((passkey) => passkey.rp_id === String(values[0])) as T[] }
+					}
 					if (query.includes('FROM events') && query.includes('unit_products')) {
 						return {
 							results: events.flatMap((event) => {
@@ -366,6 +459,8 @@ function createDatabase() {
 		},
 	} as unknown as D1Database & {
 		sessions: Map<string, { last_seen_at: number; expires_at: number }>
+		passkeys: Map<string, FakePasskey>
+		challenges: Map<string, FakeChallenge>
 		products: FakeProduct[]
 		packages: FakePackage[]
 		events: FakeEvent[]
@@ -375,6 +470,8 @@ function createDatabase() {
 function createEnv(options: { password?: string } = {}): Env & {
 	DB: D1Database & {
 		sessions: Map<string, { last_seen_at: number; expires_at: number }>
+		passkeys: Map<string, FakePasskey>
+		challenges: Map<string, FakeChallenge>
 		products: FakeProduct[]
 		packages: FakePackage[]
 		events: FakeEvent[]
@@ -398,8 +495,8 @@ function loginRequest(password: string, origin = 'http://localhost'): RequestIni
 	}
 }
 
-async function authenticatedCookie(env: Env): Promise<string> {
-	const login = await app.request('/api/auth/login', loginRequest('household passphrase'), env)
+async function authenticatedCookie(env: Env, origin = 'http://localhost'): Promise<string> {
+	const login = await app.request(`${origin}/api/auth/login`, loginRequest('household passphrase', origin), env)
 	return (login.headers.get('set-cookie') ?? '').split(';', 1)[0]!
 }
 
@@ -411,8 +508,15 @@ describe('Worker authentication routes', () => {
 		const inventory = await app.request('/api/categories', {}, env)
 
 		expect(health.status).toBe(200)
-		expect(await session.json()).toEqual({ configured: false, authenticated: false })
+		expect(await session.json()).toEqual({ configured: false, authenticated: false, passkeysAvailable: false })
 		expect(inventory.status).toBe(503)
+	})
+
+	it('keeps session discovery available on an insecure non-local origin without advertising passkeys', async () => {
+		const session = await app.request('http://supplies.example.com/api/auth/session', {}, createEnv({ password: 'household passphrase' }))
+
+		expect(session.status).toBe(200)
+		expect(await session.json()).toEqual({ configured: true, authenticated: false, passkeysAvailable: false })
 	})
 
 	it('requires a valid session for inventory routes', async () => {
@@ -465,7 +569,7 @@ describe('Worker authentication routes', () => {
 		expect(login.status).toBe(200)
 		expect(setCookie).toContain('HttpOnly')
 		expect(setCookie).toContain('SameSite=Strict')
-		expect(await session.json()).toEqual({ configured: true, authenticated: true })
+		expect(await session.json()).toEqual({ configured: true, authenticated: true, passkeysAvailable: false })
 		expect(env.DB.sessions.size).toBe(1)
 
 		const logout = await app.request('/api/auth/logout', {
@@ -474,8 +578,205 @@ describe('Worker authentication routes', () => {
 		}, env)
 		const revokedSession = await app.request('/api/auth/session', { headers: { Cookie: cookie } }, env)
 		expect(logout.status).toBe(200)
-		expect(await revokedSession.json()).toEqual({ configured: true, authenticated: false })
+		expect(await revokedSession.json()).toEqual({ configured: true, authenticated: false, passkeysAvailable: false })
 		expect(env.DB.sessions.size).toBe(0)
+	})
+
+	it('requires the household password and same-origin session before enrollment', async () => {
+		const env = createEnv({ password: 'household passphrase' })
+		const cookie = await authenticatedCookie(env, 'https://localhost')
+		const headers = { Origin: 'https://localhost', Cookie: cookie, 'Content-Type': 'application/json' }
+		const wrongPassword = await app.request('https://localhost/api/auth/passkeys/register/options', {
+			method: 'POST',
+			headers,
+			body: JSON.stringify({ password: 'wrong password' }),
+		}, env)
+		const crossOrigin = await app.request('https://localhost/api/auth/passkeys/register/options', {
+			method: 'POST',
+			headers: { ...headers, Origin: 'https://attacker.example' },
+			body: JSON.stringify({ password: 'household passphrase' }),
+		}, env)
+
+		expect(wrongPassword.status).toBe(401)
+		expect(crossOrigin.status).toBe(403)
+		expect(env.DB.challenges.size).toBe(0)
+	})
+
+	it('binds registration challenges to the session and consumes each challenge once', async () => {
+		const env = createEnv({ password: 'household passphrase' })
+		const cookie = await authenticatedCookie(env, 'https://localhost')
+		const headers = { Origin: 'https://localhost', Cookie: cookie, 'Content-Type': 'application/json' }
+		const optionsResponse = await app.request('https://localhost/api/auth/passkeys/register/options', {
+			method: 'POST',
+			headers,
+			body: JSON.stringify({ password: 'household passphrase' }),
+		}, env)
+		const options = await optionsResponse.json() as { challenge: string }
+		const otherCookie = await authenticatedCookie(env, 'https://localhost')
+		const body = JSON.stringify({
+			challenge: options.challenge,
+			response: { id: 'credential', rawId: 'credential', response: {} },
+		})
+		const otherSession = await app.request('https://localhost/api/auth/passkeys/register/verify', {
+			method: 'POST',
+			headers: { Origin: 'https://localhost', Cookie: otherCookie, 'Content-Type': 'application/json' },
+			body,
+		}, env)
+		const invalidCredential = await app.request('https://localhost/api/auth/passkeys/register/verify', {
+			method: 'POST', headers, body,
+		}, env)
+		const replay = await app.request('https://localhost/api/auth/passkeys/register/verify', {
+			method: 'POST', headers, body,
+		}, env)
+
+		expect(optionsResponse.status).toBe(200)
+		expect(otherSession.status).toBe(401)
+		expect(invalidCredential.status).toBe(400)
+		expect(replay.status).toBe(401)
+		expect(env.DB.challenges.size).toBe(0)
+	})
+
+	it('rejects an expired registration challenge', async () => {
+		const env = createEnv({ password: 'household passphrase' })
+		const cookie = await authenticatedCookie(env, 'https://localhost')
+		const headers = { Origin: 'https://localhost', Cookie: cookie, 'Content-Type': 'application/json' }
+		const optionsResponse = await app.request('https://localhost/api/auth/passkeys/register/options', {
+			method: 'POST', headers,
+			body: JSON.stringify({ password: 'household passphrase' }),
+		}, env)
+		const options = await optionsResponse.json() as { challenge: string }
+		const challenge = env.DB.challenges.get(options.challenge)
+		if (challenge) challenge.expires_at = Date.now() - 1
+		const response = await app.request('https://localhost/api/auth/passkeys/register/verify', {
+			method: 'POST', headers,
+			body: JSON.stringify({
+				challenge: options.challenge,
+				response: { id: 'credential', rawId: 'credential', response: {} },
+			}),
+		}, env)
+
+		expect(optionsResponse.status).toBe(200)
+		expect(response.status).toBe(401)
+	})
+
+	it('lists and removes credentials only for the active hostname', async () => {
+		const env = createEnv({ password: 'household passphrase' })
+		const cookie = await authenticatedCookie(env)
+		env.DB.passkeys.set('localhost:credential-a', {
+			credential_id: 'credential-a',
+			public_key: 'AQ',
+			counter: 0,
+			transports: '[]',
+			user_id: 'user-id',
+			label: 'Laptop',
+			device_type: 'multiDevice',
+			backed_up: 1,
+			rp_id: 'localhost',
+			created_at: Date.UTC(2026, 9, 16),
+		})
+		env.DB.passkeys.set('other.example:credential-b', {
+			credential_id: 'credential-b',
+			public_key: 'Ag',
+			counter: 0,
+			transports: '[]',
+			user_id: 'other-user-id',
+			label: 'Other host',
+			device_type: 'singleDevice',
+			backed_up: 0,
+			rp_id: 'other.example',
+			created_at: Date.UTC(2026, 9, 16),
+		})
+		const list = await app.request('/api/auth/passkeys', { headers: { Cookie: cookie } }, env)
+		const session = await app.request('/api/auth/session', { headers: { Cookie: cookie } }, env)
+		const remove = await app.request('/api/auth/passkeys/credential-a', {
+			method: 'DELETE',
+			headers: { Origin: 'http://localhost', Cookie: cookie },
+		}, env)
+
+		expect(await list.json()).toEqual({ passkeys: [{
+			credential_id: 'credential-a', label: 'Laptop', created_at: Date.UTC(2026, 9, 16), device_type: 'multiDevice', backed_up: 1,
+		}] })
+		expect(await session.json()).toEqual({ configured: true, authenticated: true, passkeysAvailable: true })
+		expect(remove.status).toBe(200)
+		expect(env.DB.passkeys.has('localhost:credential-a')).toBe(false)
+		expect(env.DB.passkeys.has('other.example:credential-b')).toBe(true)
+	})
+
+	it('rejects passkey login options from another origin and when none are enrolled', async () => {
+		const env = createEnv({ password: 'household passphrase' })
+		const crossOrigin = await app.request('/api/auth/passkeys/login/options', {
+			method: 'POST', headers: { Origin: 'https://attacker.example' },
+		}, env)
+		const missingPasskeys = await app.request('/api/auth/passkeys/login/options', {
+			method: 'POST', headers: { Origin: 'http://localhost' },
+		}, env)
+
+		expect(crossOrigin.status).toBe(403)
+		expect(missingPasskeys.status).toBe(404)
+	})
+
+	it('rejects assertions with the wrong browser origin and consumes failed login challenges', async () => {
+		const env = createEnv({ password: 'household passphrase' })
+		env.DB.passkeys.set('localhost:credential-a', {
+			credential_id: 'credential-a',
+			public_key: 'AQ',
+			counter: 0,
+			transports: '[]',
+			user_id: 'user-id',
+			label: 'Laptop',
+			device_type: 'multiDevice',
+			backed_up: 1,
+			rp_id: 'localhost',
+			created_at: Date.now(),
+		})
+		const optionsResponse = await app.request('/api/auth/passkeys/login/options', {
+			method: 'POST', headers: { Origin: 'http://localhost' },
+		}, env)
+		const options = await optionsResponse.json() as { challenge: string }
+		const clientDataJSON = btoa(JSON.stringify({
+			type: 'webauthn.get',
+			challenge: options.challenge,
+			origin: 'https://attacker.example',
+			crossOrigin: false,
+		})).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+		const body = JSON.stringify({
+			challenge: options.challenge,
+			response: {
+				id: 'credential-a',
+				rawId: 'credential-a',
+				type: 'public-key',
+				response: { clientDataJSON, authenticatorData: 'AQ', signature: 'AQ', userHandle: null },
+				clientExtensionResults: {},
+			},
+		})
+		const verification = await app.request('/api/auth/passkeys/login/verify', {
+			method: 'POST', headers: { Origin: 'http://localhost', 'Content-Type': 'application/json' }, body,
+		}, env)
+		const replay = await app.request('/api/auth/passkeys/login/verify', {
+			method: 'POST', headers: { Origin: 'http://localhost', 'Content-Type': 'application/json' }, body,
+		}, env)
+
+		expect(optionsResponse.status).toBe(200)
+		expect(verification.status).toBe(401)
+		expect(replay.status).toBe(401)
+		expect(env.DB.sessions.size).toBe(0)
+	})
+
+	it('keeps passkey throttling separate from password recovery', async () => {
+		const env = createEnv({ password: 'household passphrase' })
+		const responses: number[] = []
+		for (let attempt = 0; attempt < 9; attempt += 1) {
+			const response = await app.request('/api/auth/passkeys/login/options', {
+				method: 'POST',
+				headers: { Origin: 'http://localhost', 'CF-Connecting-IP': '192.0.2.10' },
+			}, env)
+			responses.push(response.status)
+		}
+		const passwordLogin = await app.request('/api/auth/login', loginRequest('household passphrase'), env)
+
+		expect(responses.slice(0, 8)).toEqual(Array.from({ length: 8 }, () => 404))
+		expect(responses[8]).toBe(429)
+		expect(passwordLogin.status).toBe(200)
 	})
 
 	it('applies a progressive cooldown after repeated incorrect passwords', async () => {

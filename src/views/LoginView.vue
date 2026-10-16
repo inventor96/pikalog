@@ -1,22 +1,29 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { LockKeyhole } from '@lucide/vue'
+import { KeyRound, LockKeyhole } from '@lucide/vue'
+import { browserSupportsWebAuthn, startAuthentication } from '@simplewebauthn/browser'
+import type { PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/server'
 import { useRoute, useRouter } from 'vue-router'
 
 const route = useRoute()
 const router = useRouter()
 const password = ref('')
 const isConfigured = ref<boolean | null>(null)
+const passkeysAvailable = ref(false)
+const supportsPasskeys = ref(false)
 const isChecking = ref(true)
 const isSubmitting = ref(false)
+const isPasskeySubmitting = ref(false)
 const errorMessage = ref('')
 
 onMounted(async () => {
 	try {
 		const response = await fetch('/api/auth/session', { cache: 'no-store' })
 		if (!response.ok) throw new Error('Could not check the authentication setup.')
-		const session = await response.json() as { configured: boolean; authenticated: boolean }
+		const session = await response.json() as { configured: boolean; authenticated: boolean; passkeysAvailable: boolean }
 		isConfigured.value = session.configured
+		passkeysAvailable.value = session.passkeysAvailable
+		supportsPasskeys.value = browserSupportsWebAuthn()
 		if (session.authenticated) await router.replace({ name: 'home' })
 	} catch {
 		isConfigured.value = null
@@ -26,8 +33,19 @@ onMounted(async () => {
 	}
 })
 
+function loginDestination(): string {
+	const redirect = route.query.redirect
+	return typeof redirect === 'string' && redirect.startsWith('/') && !redirect.startsWith('//') && redirect !== '/login'
+		? redirect
+		: '/'
+}
+
+async function finishSignIn() {
+	await router.replace(loginDestination())
+}
+
 async function signIn() {
-	if (!isConfigured.value || isSubmitting.value) return
+	if (!isConfigured.value || isSubmitting.value || isPasskeySubmitting.value) return
 	isSubmitting.value = true
 	errorMessage.value = ''
 
@@ -38,11 +56,7 @@ async function signIn() {
 			body: JSON.stringify({ password: password.value }),
 		})
 		if (response.ok) {
-			const redirect = route.query.redirect
-			const destination = typeof redirect === 'string' && redirect.startsWith('/') && !redirect.startsWith('//') && redirect !== '/login'
-				? redirect
-				: '/'
-			await router.replace(destination)
+			await finishSignIn()
 			return
 		}
 
@@ -54,6 +68,39 @@ async function signIn() {
 		errorMessage.value = 'The authentication service could not be reached.'
 	} finally {
 		isSubmitting.value = false
+	}
+}
+
+async function signInWithPasskey() {
+	if (!isConfigured.value || !passkeysAvailable.value || !supportsPasskeys.value || isPasskeySubmitting.value) return
+	isPasskeySubmitting.value = true
+	errorMessage.value = ''
+	try {
+		const optionsResponse = await fetch('/api/auth/passkeys/login/options', { method: 'POST' })
+		if (!optionsResponse.ok) {
+			if (optionsResponse.status === 429) errorMessage.value = 'Too many attempts. Wait before trying again.'
+			else errorMessage.value = 'Passkey sign-in is unavailable for this hostname.'
+			return
+		}
+		const options = await optionsResponse.json() as PublicKeyCredentialRequestOptionsJSON
+		const assertion = await startAuthentication({ optionsJSON: options })
+		const verification = await fetch('/api/auth/passkeys/login/verify', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ challenge: options.challenge, response: assertion }),
+		})
+		if (verification.ok) {
+			await finishSignIn()
+			return
+		}
+		if (verification.status === 429) errorMessage.value = 'Too many attempts. Wait before trying again.'
+		else errorMessage.value = 'That passkey could not be verified. Try again or use the household password.'
+	} catch (error) {
+		errorMessage.value = error instanceof Error && (error.name === 'NotAllowedError' || error.name === 'AbortError')
+			? 'Passkey sign-in was cancelled.'
+			: 'The authentication service could not be reached.'
+	} finally {
+		isPasskeySubmitting.value = false
 	}
 }
 </script>
@@ -75,6 +122,17 @@ async function signIn() {
 				This deployment needs a <code>PIKALOG_PASSWORD</code> of at least 8 characters.
 			</div>
 			<form v-else class="login-form" @submit.prevent="signIn">
+				<button
+					v-if="passkeysAvailable && supportsPasskeys"
+					class="login-submit login-passkey"
+					type="button"
+					:disabled="isPasskeySubmitting || isSubmitting"
+					@click="signInWithPasskey"
+				>
+					<KeyRound :size="16" aria-hidden="true" />
+					{{ isPasskeySubmitting ? 'Waiting for passkey…' : 'Use a passkey' }}
+				</button>
+				<p v-if="passkeysAvailable && supportsPasskeys" class="login-divider">OR USE YOUR PASSWORD</p>
 				<label for="household-password">Household password</label>
 				<div class="login-input-wrap">
 					<LockKeyhole :size="17" aria-hidden="true" />
@@ -89,7 +147,7 @@ async function signIn() {
 					/>
 				</div>
 				<p v-if="errorMessage" id="login-error" class="login-error" role="alert">{{ errorMessage }}</p>
-				<button class="login-submit" type="submit" :disabled="isSubmitting || !password">
+				<button class="login-submit" type="submit" :disabled="isSubmitting || isPasskeySubmitting || !password">
 					{{ isSubmitting ? 'Signing in…' : 'Continue' }}
 				</button>
 			</form>
@@ -190,8 +248,12 @@ async function signIn() {
 }
 
 .login-submit {
+	display: flex;
 	width: 100%;
 	min-height: 42px;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
 	border: 0;
 	border-radius: 5px;
 	margin-top: 15px;
@@ -205,6 +267,18 @@ async function signIn() {
 .login-submit:disabled {
 	cursor: wait;
 	opacity: 0.65;
+}
+
+.login-passkey {
+	margin: 0 0 18px;
+}
+
+.login-divider {
+	margin: 0 0 17px;
+	color: var(--color-ink-faint);
+	font-family: var(--font-mono);
+	font-size: 9px;
+	text-align: center;
 }
 
 .login-notice {

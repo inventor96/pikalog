@@ -90,3 +90,7 @@ export async function revokeSession(database: D1Database, token: string | undefi
 export async function hashClientAddress(address: string): Promise<string> {
 	return hashValue(address)
 }
+
+export async function hashSessionToken(token: string): Promise<string> {
+	return hashValue(token)
+}

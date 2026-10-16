@@ -7,6 +7,7 @@ import {
 	revokeSession,
 	verifySession,
 } from './auth'
+import { decodeBase64Url, encodeBase64Url, resolveRelyingParty } from './webauthn'
 
 function createSessionDatabase() {
 	const sessions = new Map<string, { last_seen_at: number; expires_at: number }>()
@@ -87,5 +88,22 @@ describe('worker authentication helpers', () => {
 		const first = await hashClientAddress('192.0.2.1')
 		expect(await hashClientAddress('192.0.2.1')).toBe(first)
 		expect(await hashClientAddress('192.0.2.2')).not.toBe(first)
+	})
+
+	it('resolves passkeys to the exact secure hostname, with localhost for development', () => {
+		expect(resolveRelyingParty('https://supplies.example.com:8443/login')).toEqual({
+			id: 'supplies.example.com',
+			origin: 'https://supplies.example.com:8443',
+		})
+		expect(resolveRelyingParty('http://localhost:5173/login')).toEqual({
+			id: 'localhost',
+			origin: 'http://localhost:5173',
+		})
+		expect(() => resolveRelyingParty('http://supplies.example.com/login')).toThrow('Passkeys require HTTPS')
+	})
+
+	it('round-trips WebAuthn base64url byte values', () => {
+		const bytes = new Uint8Array([0, 1, 127, 128, 255])
+		expect(decodeBase64Url(encodeBase64Url(bytes))).toEqual(bytes)
 	})
 })

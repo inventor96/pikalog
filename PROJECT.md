@@ -44,7 +44,7 @@ Scanners feed the browser, the Worker is the only component that touches D1, and
 
 - **Stack.** TypeScript throughout: Worker with Hono, D1 (SQLite), Vue SPA built to static assets, Vitest for tests.
 - **One-click deploy.** A "Deploy to Cloudflare" button in the README. Verify on a fresh account that it provisions D1 and runs migrations; if not, make migrations idempotent and run them on first request.
-- **Configuration.** Secrets prompted at deploy (the app password). No other required setup.
+- **Configuration.** The household password is the only required deploy secret. Optional passkeys are enrolled in-app after password sign-in.
 - **PWA.** Installable with an offline shell; writes require connectivity in v1.
 - **Free-tier limits.** Confirm current limits for Workers, D1 and Cron Triggers before committing; they have changed before.
 
@@ -247,7 +247,7 @@ Statistics to compute and show:
 The app stores only supply inventory. No glucose, dose or personal health data is collected, and none should ever be added.
 
 - **Data location.** Each user deploys into their own Cloudflare account. No telemetry, no central server. Catalog sync pulls public files and sends nothing about the user.
-- **Auth.** A deploy-time secret (password, or a passkey bootstrapped from it) with a session cookie and rate limiting. One shared household login in v1. Do not depend on Cloudflare Access: its Zero Trust setup happens outside the deploy button and breaks the one-step goal.
+- **Auth.** A deploy-time household password with a session cookie and rate limiting. Optional passkeys share the same household identity, require the password for enrollment, and remain optional so the password is always a recovery path. Credentials are bound to the exact active hostname and require HTTPS (localhost for development); moving to a custom domain requires re-enrollment. Do not depend on Cloudflare Access: its Zero Trust setup happens outside the deploy button and breaks the one-step goal.
 - **Disclaimer.** The UI and README state that this is not a medical device, projections are estimates, and manufacturer instructions for use always take precedence.
 - **Catalog content.** Entries record facts (pack size, rated wear, shelf life) with sources. They never recommend using items past expiry.
 - **Naming.** Manufacturer and product names appear factually for identification, with no implied endorsement.

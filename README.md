@@ -46,9 +46,13 @@ The Deploy to Cloudflare button creates a Git copy in your account, prompts for 
 
 For an existing deployment, set or update `PIKALOG_PASSWORD` with `npx wrangler secret put PIKALOG_PASSWORD`. Keep it private. The Worker fails closed until a password of at least 8 characters is configured.
 
+## Passkeys
+
+After signing in, add or remove passkeys in Configuration. Enrollment requires the household password again. Passkeys require HTTPS; `localhost` is supported for local development. Each passkey belongs to the exact hostname where it was added, so changing between a `workers.dev` address and a custom domain requires enrolling again on the new hostname. Keep the household password configured as a recovery method.
+
 ## Back up and restore
 
-Export the complete remote D1 database, including schema and data, with Wrangler. The output is plain SQL and contains your inventory and supply history; store it securely outside the repository and never commit it.
+Export the complete remote D1 database, including schema and data, with Wrangler. The output is plain SQL and contains your inventory, supply history, and registered passkey public credentials; it does not contain authenticator private keys. Store it securely outside the repository and never commit it.
 
 ```sh
 npx wrangler d1 export pikalog-db --remote --output="$HOME/pikalog-backup-$(date +%F).sql"
