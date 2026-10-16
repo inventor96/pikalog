@@ -158,7 +158,8 @@ function createDatabase() {
 							})[0]
 						const previousProduct = products.find((item) => item.id === previous?.product_id)
 						const previousUnitsRemaining = previous && previousProduct
-							? (previousProduct.contains_qty ?? 1) - events.filter((event) => event.package_id === previous.id && event.type === 'unit_started').length
+							? (previousProduct.contains_qty ?? 1) - events.filter((event) => event.package_id === previous.id
+								&& (event.type === 'unit_started' || event.type === 'discarded')).reduce((sum, event) => sum + event.qty, 0)
 							: 0
 						return {
 							id: pkg.id,
@@ -167,6 +168,7 @@ function createDatabase() {
 							expiry: pkg.expiry,
 							contains_qty: product.contains_qty,
 							overlap_allowed: 0,
+							previous_package_id: previous?.id ?? null,
 							previous_units_remaining: previousUnitsRemaining,
 							is_received: events.some((event) => event.package_id === pkg.id && event.type === 'received') ? 1 : 0,
 							is_open: events.some((event) => event.package_id === pkg.id && event.type === 'opened') ? 1 : 0,
@@ -265,6 +267,7 @@ function createDatabase() {
 									expiry: pkg.expiry ?? undefined,
 									receivedOn: received.occurred_on,
 									unitsRemaining: Math.max(0, (product.contains_qty ?? 1) - consumed),
+									isOpen: events.some((event) => event.package_id === pkg.id && event.type === 'opened'),
 								}] as T[]
 							}),
 						}
@@ -350,7 +353,8 @@ function createDatabase() {
 							occurred_on: String(values[3]),
 							unit_serial: values[4] === null ? null : String(values[4]),
 							unit_expiry: values[5] === null ? null : String(values[5]),
-							end_reason: values[6] === null ? null : String(values[6]),
+							inferred: Number(values[6] ?? 0),
+							end_reason: values[7] === null ? null : String(values[7]),
 						})
 					}
 				}
@@ -765,7 +769,7 @@ describe('Worker authentication routes', () => {
 				occurredOn: '2026-10-15',
 			}),
 		}, env)
-		const startData = await startResponse.json() as { started: boolean; implicit: boolean; matchedBy: string }
+		const startData = await startResponse.json() as { started: boolean; opened: boolean; implicit: boolean; matchedBy: string }
 		const inventoryResponse = await app.request('/api/inventory', { headers: { Cookie: cookie } }, env)
 		const inventory = await inventoryResponse.json() as { packages: Array<Record<string, unknown>> }
 		const forecastResponse = await app.request('/api/forecast?today=2026-10-15', { headers: { Cookie: cookie } }, env)
@@ -782,9 +786,10 @@ describe('Worker authentication routes', () => {
 		expect(unitResponse.status).toBe(201)
 		expect(packResponse.status).toBe(201)
 		expect(startResponse.status).toBe(201)
-		expect(startData).toMatchObject({ started: true, implicit: false, matchedBy: 'lot_expiry' })
+		expect(startData).toMatchObject({ started: true, opened: true, implicit: false, matchedBy: 'lot_expiry' })
+		expect(env.DB.events.filter((event) => event.type === 'opened')).toHaveLength(1)
 		expect(env.DB.events.filter((event) => event.type === 'unit_started'))
-			.toMatchObject([{ type: 'unit_started', occurred_on: '2026-10-15' }])
+			.toMatchObject([{ type: 'unit_started', occurred_on: '2026-10-15', unit_serial: 'UNIT-4', unit_expiry: '2028-12-31' }])
 		expect(inventory.packages).toMatchObject([{ units_remaining: 1 }])
 		expect(forecastResponse.status).toBe(200)
 		expect(forecast.categories).toMatchObject([{
@@ -794,6 +799,146 @@ describe('Worker authentication routes', () => {
 			runOutDate: '2026-11-04',
 			nextPickProduct: 'Sensor',
 		}])
+	})
+
+	it('starts an item without opening its matched box when the scan toggle is off', async () => {
+		const env = createEnv({ password: 'household passphrase' })
+		const cookie = await authenticatedCookie(env)
+		const unitResponse = await app.request('/api/products', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ categoryId: 1, manufacturer: 'Acme', name: 'Sensor', gtin: '00036000291452' }),
+		}, env)
+		const unitData = await unitResponse.json() as { product: { id: number } }
+		const packResponse = await app.request('/api/products', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ categoryId: 1, manufacturer: 'Acme', name: 'Sensor pack', containsProductId: unitData.product.id, containsQty: 2 }),
+		}, env)
+		const packData = await packResponse.json() as { product: { id: number } }
+		await app.request('/api/receipts', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ productId: packData.product.id, lot: 'LOT-OFF', receivedOn: '2026-10-14' }),
+		}, env)
+
+		const response = await app.request('/api/unit-scans', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ gtin: '00036000291452', lot: 'LOT-OFF', markBoxOpened: false, occurredOn: '2026-10-15' }),
+		}, env)
+		const result = await response.json() as { opened: boolean; implicit: boolean }
+
+		expect(response.status).toBe(201)
+		expect(result).toMatchObject({ opened: false, implicit: false })
+		expect(env.DB.events.map((event) => event.type)).toEqual(['received', 'unit_started'])
+	})
+
+	it('defers an item scan until the previous-package leftovers are resolved', async () => {
+		const env = createEnv({ password: 'household passphrase' })
+		const cookie = await authenticatedCookie(env)
+		const unitResponse = await app.request('/api/products', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ categoryId: 1, manufacturer: 'Acme', name: 'Sensor', gtin: '00036000291452' }),
+		}, env)
+		const unitData = await unitResponse.json() as { product: { id: number } }
+		const packResponse = await app.request('/api/products', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ categoryId: 1, manufacturer: 'Acme', name: 'Sensor pack', containsProductId: unitData.product.id, containsQty: 3 }),
+		}, env)
+		const packData = await packResponse.json() as { product: { id: number } }
+		const receivePackage = async (lot: string, receivedOn: string) => {
+			await app.request('/api/receipts', {
+				method: 'POST',
+				headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+				body: JSON.stringify({ productId: packData.product.id, lot, receivedOn }),
+			}, env)
+			return env.DB.packages.at(-1)!.id
+		}
+		const firstPackageId = await receivePackage('LOT-OLD', '2026-10-10')
+		await app.request(`/api/packages/${firstPackageId}/open`, {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ occurredOn: '2026-10-11' }),
+		}, env)
+		const secondPackageId = await receivePackage('LOT-NEW', '2026-10-12')
+		const scanBody = {
+			gtin: '00036000291452',
+			lot: 'LOT-NEW',
+			serial: 'UNIT-NEW',
+			occurredOn: '2026-10-15',
+			markBoxOpened: true,
+		}
+		const eventCountBeforeScan = env.DB.events.length
+		const scanRequest = (extra: Record<string, unknown> = {}) => app.request('/api/unit-scans', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ ...scanBody, ...extra }),
+		}, env)
+
+		const confirmationResponse = await scanRequest()
+		const confirmation = await confirmationResponse.json() as { error: string; remainingUnits: number }
+		expect(confirmationResponse.status).toBe(409)
+		expect(confirmation).toMatchObject({ error: 'leftover_confirmation_required', remainingUnits: 2 })
+		expect(env.DB.events).toHaveLength(eventCountBeforeScan)
+
+		const resolvedResponse = await scanRequest({ leftoverResolution: 'keep' })
+		const resolved = await resolvedResponse.json() as { opened: boolean; matchedBy: string }
+		expect(resolvedResponse.status).toBe(201)
+		expect(resolved).toMatchObject({ opened: true, matchedBy: 'lot' })
+		expect(env.DB.events.slice(eventCountBeforeScan)).toMatchObject([
+			{ package_id: secondPackageId, type: 'opened' },
+			{ package_id: firstPackageId, type: 'unit_ended' },
+			{ package_id: secondPackageId, type: 'unit_started', unit_serial: 'UNIT-NEW' },
+		])
+	})
+
+	it('asks before opening a box with leftovers, then records the chosen resolution', async () => {
+		const env = createEnv({ password: 'household passphrase' })
+		const cookie = await authenticatedCookie(env)
+		const productResponse = await app.request('/api/products', {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ categoryId: 1, manufacturer: 'Acme', name: 'Sensor pack', gtin: '09506000134352', containsQty: 3 }),
+		}, env)
+		const productData = await productResponse.json() as { product: { id: number } }
+		const receivePackage = async (receivedOn: string) => {
+			await app.request('/api/receipts', {
+				method: 'POST',
+				headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+				body: JSON.stringify({ productId: productData.product.id, receivedOn }),
+			}, env)
+			return env.DB.packages.at(-1)!.id
+		}
+		const openRequest = (packageId: number, options: Record<string, unknown> = {}) => app.request(`/api/packages/${packageId}/open`, {
+			method: 'POST',
+			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ occurredOn: '2026-10-15', ...options }),
+		}, env)
+		const firstPackageId = await receivePackage('2026-10-10')
+		expect((await openRequest(firstPackageId)).status).toBe(201)
+		const secondPackageId = await receivePackage('2026-10-11')
+
+		const startChoiceResponse = await openRequest(secondPackageId)
+		const startChoice = await startChoiceResponse.json() as { error: string; remainingUnits: number }
+		const leftoverResponse = await openRequest(secondPackageId, { startFirstUnit: true })
+		const leftover = await leftoverResponse.json() as { error: string; remainingUnits: number }
+		expect(startChoiceResponse.status).toBe(409)
+		expect(startChoice).toMatchObject({ error: 'start_choice_required', remainingUnits: 2 })
+		expect(leftoverResponse.status).toBe(409)
+		expect(leftover).toMatchObject({ error: 'leftover_confirmation_required', remainingUnits: 2 })
+		expect(env.DB.events).toHaveLength(4)
+
+		const resolvedResponse = await openRequest(secondPackageId, { startFirstUnit: true, leftoverResolution: 'mark_used' })
+		expect(resolvedResponse.status).toBe(201)
+		expect(env.DB.events.slice(4)).toMatchObject([
+			{ package_id: firstPackageId, type: 'discarded', qty: 2, inferred: 1 },
+			{ package_id: secondPackageId, type: 'opened' },
+			{ package_id: firstPackageId, type: 'unit_ended', end_reason: 'planned' },
+			{ package_id: secondPackageId, type: 'unit_started' },
+		])
 	})
 
 	it('creates an implicit package when a unit scan has no eligible received pack', async () => {

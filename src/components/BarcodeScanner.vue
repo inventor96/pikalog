@@ -12,11 +12,12 @@ const props = defineProps<{
 
 const emit = defineEmits<{
 	close: []
-	detected: [result: BarcodeParseResult, mode: ScanMode]
+	detected: [result: BarcodeParseResult, mode: ScanMode, markBoxOpened: boolean]
 }>()
 
 const modeStorageKey = 'pikalog.scan-mode'
-const scanMode = ref<ScanMode>(localStorage.getItem(modeStorageKey) === 'open' ? 'open' : 'receive')
+const scanMode = ref<ScanMode>(localStorage.getItem(modeStorageKey) === 'receive' ? 'receive' : 'open')
+const markBoxOpened = ref(true)
 const inputMethod = ref<'camera' | 'keyboard'>('camera')
 const manualValue = ref('')
 const scanResult = ref<BarcodeParseResult | null>(null)
@@ -52,7 +53,7 @@ onUnmounted(stopCamera)
 function acceptBarcode(raw: string) {
 	const result = ingest(raw)
 	scanResult.value = result
-	emit('detected', result, scanMode.value)
+	emit('detected', result, scanMode.value, markBoxOpened.value)
 	stopCamera()
 }
 
@@ -172,9 +173,13 @@ function closeDialog() {
 			</header>
 
 			<div class="scan-mode" role="group" aria-label="Scan action">
-				<button type="button" :aria-pressed="scanMode === 'receive'" @click="scanMode = 'receive'">Receive</button>
 				<button type="button" :aria-pressed="scanMode === 'open'" @click="scanMode = 'open'">Open</button>
+				<button type="button" :aria-pressed="scanMode === 'receive'" @click="scanMode = 'receive'">Receive</button>
 			</div>
+			<label v-if="scanMode === 'open'" class="scan-open-option">
+				<input v-model="markBoxOpened" type="checkbox" />
+				<span>Mark the matched box as opened</span>
+			</label>
 
 			<div class="scan-method" role="tablist" aria-label="Barcode input method">
 				<button
@@ -256,8 +261,6 @@ function closeDialog() {
 				</div>
 				<p class="camera-caption">Keyboard-wedge scanners enter data into this field.</p>
 			</form>
-
-			<footer class="scan-footer">Mode: <strong>{{ scanMode === 'receive' ? 'Receive' : 'Open' }}</strong></footer>
 		</section>
 	</div>
 </template>
@@ -350,6 +353,22 @@ function closeDialog() {
 	gap: 18px;
 	margin-top: 23px;
 	border-bottom: 1px solid var(--color-line-strong);
+}
+
+.scan-open-option {
+	display: flex;
+	min-height: 38px;
+	align-items: center;
+	gap: 9px;
+	margin-top: 10px;
+	color: var(--color-ink-soft);
+	font-size: 12px;
+}
+
+.scan-open-option input {
+	width: 16px;
+	height: 16px;
+	accent-color: var(--color-green);
 }
 
 .scan-method button {

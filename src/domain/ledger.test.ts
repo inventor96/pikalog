@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
 	matchUnitScan,
+	matchPackageScan,
 	planPackageOpen,
 	planUnitStart,
 	type OpenPackageCandidate,
@@ -53,6 +54,7 @@ describe('planPackageOpen', () => {
 	it.each(['keep', 'mark_used'] as const)('records the %s choice for leftovers', (leftoverResolution) => {
 		const plan = planPackageOpen({
 			...baseInput,
+			previousPackageId: 19,
 			previousUnitsRemaining: 3,
 			startFirstUnit: true,
 			leftoverResolution,
@@ -63,6 +65,14 @@ describe('planPackageOpen', () => {
 			previousUnitsDisposition: leftoverResolution,
 			previousUnitsToMarkUsed: leftoverResolution === 'mark_used' ? 3 : 0,
 		})
+		if (leftoverResolution === 'mark_used' && plan.kind === 'ready') {
+			expect(plan.events[0]).toMatchObject({
+				packageId: 19,
+				type: 'discarded',
+				qty: 3,
+				inferred: true,
+			})
+		}
 	})
 
 	it('ends the active unit before starting another when overlap is disabled', () => {
@@ -164,6 +174,26 @@ describe('matchUnitScan', () => {
 		})
 	})
 
+	it('prefers a lot match over a conflicting expiry-only match', () => {
+		expect(matchUnitScan({ productId: 4, lot: 'LOT-A', expiry: '2027-02-01' }, packages)).toMatchObject({
+			kind: 'matched',
+			packageId: 1,
+			matchedBy: 'lot',
+		})
+	})
+
+	it('matches by lot when expiry is missing and chooses the oldest matching package', () => {
+		const lotPackages = [
+			{ id: 5, containsProductId: 4, lot: 'LOT-A', expiry: '2027-02-01', receivedOn: '2026-01-03', unitsRemaining: 1 },
+			packages[0]!,
+		]
+		expect(matchUnitScan({ productId: 4, lot: 'LOT-A' }, lotPackages)).toMatchObject({
+			kind: 'matched',
+			packageId: 1,
+			matchedBy: 'lot',
+		})
+	})
+
 	it('uses the oldest eligible package for a GTIN-only scan', () => {
 		expect(matchUnitScan({ productId: 4, gtin: '00000000000001' }, packages)).toMatchObject({
 			kind: 'matched',
@@ -181,5 +211,28 @@ describe('matchUnitScan', () => {
 	it('flags a serial that has already appeared in the ledger', () => {
 		expect(matchUnitScan({ productId: 4, gtin: '00000000000001', serial: 'S-1' }, packages, ['S-1']))
 			.toMatchObject({ serialAlreadyUsed: true })
+	})
+})
+
+describe('matchPackageScan', () => {
+	const packages = [
+		{ id: 1, gtin: 'BOX-1', lot: 'LOT-A', expiry: '2027-01-01', receivedOn: '2026-01-02' },
+		{ id: 2, gtin: 'BOX-1', lot: 'LOT-B', expiry: '2027-01-01', receivedOn: '2026-01-01' },
+		{ id: 3, gtin: 'BOX-1', lot: 'LOT-A', expiry: '2027-02-01', receivedOn: '2025-12-01' },
+	]
+
+	it('prefers an exact lot and expiry match', () => {
+		expect(matchPackageScan({ gtin: 'BOX-1', lot: 'LOT-A', expiry: '2027-01-01' }, packages).map(({ id }) => id))
+			.toEqual([1])
+	})
+
+	it('uses the oldest same-lot box before expiry-only matches', () => {
+		expect(matchPackageScan({ gtin: 'BOX-1', lot: 'LOT-A', expiry: '2027-01-01' }, packages.slice(1)).map(({ id }) => id))
+			.toEqual([3])
+	})
+
+	it('uses the oldest expiry match when no lot matches', () => {
+		expect(matchPackageScan({ gtin: 'BOX-1', lot: 'LOT-X', expiry: '2027-01-01' }, packages).map(({ id }) => id))
+			.toEqual([2, 1])
 	})
 })

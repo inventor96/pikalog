@@ -1,6 +1,12 @@
 import { Hono } from 'hono'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
-import { matchUnitScan, planPackageOpen, planUnitStart, type OpenPackageCandidate } from '../src/domain/ledger'
+import {
+	matchUnitScan,
+	planPackageOpen,
+	planUnitStart,
+	type LedgerEventDraft,
+	type OpenPackageCandidate,
+} from '../src/domain/ledger'
 import { calculateSupplyForecast, type ForecastEvent } from '../src/domain/forecast'
 import { estimateProjectedReceipts } from '../src/domain/receipts'
 import { syncCatalog } from './catalog-sync'
@@ -52,6 +58,99 @@ function isValidGtin(value: string): boolean {
 		sum += Number(value[index]) * weight
 	}
 	return (10 - (sum % 10)) % 10 === Number(value.at(-1))
+}
+
+type PackageOpeningState = {
+	id: number
+	product_id: number
+	serial: string | null
+	expiry: string | null
+	contains_qty: number | null
+	overlap_allowed: number
+	previous_package_id: number | null
+	previous_units_remaining: number
+	is_received: number
+	is_open: number
+}
+
+async function loadPackageOpeningState(db: D1Database, packageId: number): Promise<PackageOpeningState | null> {
+	return db.prepare(`
+		SELECT packages.id, packages.product_id, packages.serial, packages.expiry, products.contains_qty,
+			categories.overlap_allowed,
+			(SELECT previous.id
+				FROM packages AS previous
+				WHERE previous.product_id = packages.product_id
+					AND EXISTS (SELECT 1 FROM events AS received WHERE received.package_id = previous.id AND received.type = 'received')
+					AND EXISTS (SELECT 1 FROM events AS opened WHERE opened.package_id = previous.id AND opened.type = 'opened')
+				ORDER BY (SELECT MAX(opened.id) FROM events AS opened
+					WHERE opened.package_id = previous.id AND opened.type = 'opened') DESC
+				LIMIT 1) AS previous_package_id,
+			COALESCE((
+				SELECT MAX(0, COALESCE(products_previous.contains_qty, 1)
+					+ COALESCE((SELECT SUM(qty) FROM events AS adjusted
+						WHERE adjusted.package_id = previous.id AND adjusted.type = 'adjusted'), 0)
+					- COALESCE((SELECT SUM(qty) FROM events AS consumed
+						WHERE consumed.package_id = previous.id AND consumed.type IN ('unit_started', 'discarded')), 0))
+				FROM packages AS previous
+				JOIN effective_products AS products_previous ON products_previous.id = previous.product_id
+				WHERE previous.product_id = packages.product_id
+					AND EXISTS (SELECT 1 FROM events AS received WHERE received.package_id = previous.id AND received.type = 'received')
+					AND EXISTS (SELECT 1 FROM events AS opened WHERE opened.package_id = previous.id AND opened.type = 'opened')
+				ORDER BY (SELECT MAX(opened.id) FROM events AS opened
+					WHERE opened.package_id = previous.id AND opened.type = 'opened') DESC
+				LIMIT 1
+			), 0) AS previous_units_remaining,
+			EXISTS (SELECT 1 FROM events WHERE events.package_id = packages.id AND events.type = 'received') AS is_received,
+			EXISTS (SELECT 1 FROM events WHERE events.package_id = packages.id AND events.type = 'opened') AS is_open
+		FROM packages
+		JOIN effective_products AS products ON products.id = packages.product_id
+		JOIN effective_categories AS categories ON categories.id = products.category_id
+		WHERE packages.id = ?
+	`).bind(packageId).first<PackageOpeningState>()
+}
+
+async function loadActiveUnit(db: D1Database, productId: number): Promise<{
+	package_id: number
+	unit_serial: string | null
+	unit_expiry: string | null
+} | null> {
+	return db.prepare(`
+		SELECT started.package_id, started.unit_serial, started.unit_expiry
+		FROM events AS started
+		JOIN packages AS active_package ON active_package.id = started.package_id
+		JOIN effective_products AS active_product ON active_product.id = active_package.product_id
+		JOIN effective_products AS target_product ON target_product.id = ?
+		WHERE active_product.category_id = target_product.category_id
+			AND started.type = 'unit_started'
+			AND NOT EXISTS (
+				SELECT 1 FROM events AS ended
+				WHERE ended.package_id = started.package_id AND ended.type = 'unit_ended'
+					AND (ended.occurred_on > started.occurred_on
+						OR (ended.occurred_on = started.occurred_on AND ended.id > started.id))
+			)
+		ORDER BY started.occurred_on DESC, started.id DESC
+		LIMIT 1
+	`).bind(productId).first<{
+	package_id: number
+	unit_serial: string | null
+	unit_expiry: string | null
+}>()
+}
+
+async function writeLedgerEvents(db: D1Database, events: readonly LedgerEventDraft[]): Promise<void> {
+	await db.batch(events.map((event) => db.prepare(`
+		INSERT INTO events (package_id, type, qty, occurred_on, recorded_at, unit_serial, unit_expiry, inferred, end_reason)
+		VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?, ?, ?, ?)
+	`).bind(
+		event.packageId,
+		event.type,
+		event.qty,
+		event.occurredOn,
+		event.unitSerial ?? null,
+		event.unitExpiry ?? null,
+		event.inferred ? 1 : 0,
+		event.endReason ?? null,
+	)))
 }
 
 const app = new Hono<{ Bindings: Env }>()
@@ -777,75 +876,39 @@ app.post('/api/receipts', async (context) => {
 
 app.post('/api/packages/:id/open', async (context) => {
 	const packageId = Number(context.req.param('id'))
-	const body = await context.req.json<{ occurredOn?: unknown }>().catch(() => null)
+	const body = await context.req.json<{
+		occurredOn?: unknown
+		startFirstUnit?: unknown
+		leftoverResolution?: unknown
+	}>().catch(() => null)
 	const occurredOn = typeof body?.occurredOn === 'string' ? body.occurredOn : ''
-	if (!Number.isSafeInteger(packageId) || packageId <= 0 || !isIsoDate(occurredOn)) {
+	const startFirstUnit = body?.startFirstUnit
+	const leftoverResolution = body?.leftoverResolution
+	if (!Number.isSafeInteger(packageId) || packageId <= 0 || !isIsoDate(occurredOn)
+		|| (startFirstUnit !== undefined && typeof startFirstUnit !== 'boolean')
+		|| (leftoverResolution !== undefined && leftoverResolution !== 'keep' && leftoverResolution !== 'mark_used')) {
 		return context.json({ error: 'invalid_open' }, 400)
 	}
-
-	const supply = await context.env.DB.prepare(`
-		SELECT packages.id, packages.product_id, packages.serial, packages.expiry, products.contains_qty,
-			categories.overlap_allowed,
-			COALESCE((
-				SELECT COALESCE(products_previous.contains_qty, 1) - (
-					SELECT COUNT(*) FROM events AS started
-					WHERE started.package_id = previous.id AND started.type = 'unit_started'
-				)
-				FROM packages AS previous
-				JOIN effective_products AS products_previous ON products_previous.id = previous.product_id
-				WHERE previous.product_id = packages.product_id
-					AND EXISTS (SELECT 1 FROM events AS received WHERE received.package_id = previous.id AND received.type = 'received')
-					AND EXISTS (SELECT 1 FROM events AS opened WHERE opened.package_id = previous.id AND opened.type = 'opened')
-				ORDER BY (SELECT MAX(opened.id) FROM events AS opened
-					WHERE opened.package_id = previous.id AND opened.type = 'opened') DESC
-				LIMIT 1
-			), 0) AS previous_units_remaining,
-			EXISTS (SELECT 1 FROM events WHERE events.package_id = packages.id AND events.type = 'received') AS is_received,
-			EXISTS (SELECT 1 FROM events WHERE events.package_id = packages.id AND events.type = 'opened') AS is_open
-		FROM packages
-		JOIN effective_products AS products ON products.id = packages.product_id
-		JOIN effective_categories AS categories ON categories.id = products.category_id
-		WHERE packages.id = ?
-	`).bind(packageId).first<{
-		id: number
-		product_id: number
-		serial: string | null
-		expiry: string | null
-		contains_qty: number | null
-		overlap_allowed: number
-		previous_units_remaining: number
-		is_received: number
-		is_open: number
-	}>()
+	const supply = await loadPackageOpeningState(context.env.DB, packageId)
 	if (!supply || !supply.is_received) return context.json({ error: 'package_not_found' }, 404)
 	if (supply.is_open) return context.json({ error: 'package_already_open' }, 409)
-	const activeUnit = supply.overlap_allowed ? null : await context.env.DB.prepare(`
-		SELECT started.package_id, started.unit_serial, started.unit_expiry
-		FROM events AS started
-		JOIN packages AS active_package ON active_package.id = started.package_id
-		JOIN effective_products AS active_product ON active_product.id = active_package.product_id
-		JOIN effective_products AS target_product ON target_product.id = ?
-		WHERE active_product.category_id = target_product.category_id
-			AND started.type = 'unit_started'
-			AND NOT EXISTS (
-				SELECT 1 FROM events AS ended
-				WHERE ended.package_id = started.package_id AND ended.type = 'unit_ended'
-					AND (ended.occurred_on > started.occurred_on
-						OR (ended.occurred_on = started.occurred_on AND ended.id > started.id))
-			)
-		ORDER BY started.occurred_on DESC, started.id DESC
-		LIMIT 1
-	`).bind(supply.product_id).first<{
-		package_id: number
-		unit_serial: string | null
-		unit_expiry: string | null
-	}>()
+	const remainingUnits = Math.max(0, supply.previous_units_remaining)
+	if (startFirstUnit === undefined && remainingUnits > 1) {
+		return context.json({ error: 'start_choice_required', remainingUnits }, 409)
+	}
+	if (leftoverResolution !== undefined && (startFirstUnit !== true || remainingUnits <= 1)) {
+		return context.json({ error: 'invalid_open' }, 400)
+	}
+	const activeUnit = supply.overlap_allowed ? null : await loadActiveUnit(context.env.DB, supply.product_id)
 
 	const plan = planPackageOpen({
 		packageId,
+		previousPackageId: supply.previous_package_id ?? undefined,
 		occurredOn,
-		previousUnitsRemaining: Math.max(0, supply.previous_units_remaining),
+		previousUnitsRemaining: remainingUnits,
 		overlapAllowed: Boolean(supply.overlap_allowed),
+		startFirstUnit: startFirstUnit as boolean | undefined,
+		leftoverResolution: leftoverResolution as 'keep' | 'mark_used' | undefined,
 		activeUnit: activeUnit ? {
 			packageId: activeUnit.package_id,
 			serial: activeUnit.unit_serial ?? undefined,
@@ -854,21 +917,10 @@ app.post('/api/packages/:id/open', async (context) => {
 		unitExpiry: supply.expiry ?? undefined,
 	})
 	if (plan.kind === 'confirmation_required') {
-		return context.json({ error: 'open_confirmation_required', remainingUnits: plan.remainingUnits }, 409)
+		return context.json({ error: 'leftover_confirmation_required', remainingUnits: plan.remainingUnits }, 409)
 	}
 
-	await context.env.DB.batch(plan.events.map((event) => context.env.DB.prepare(`
-		INSERT INTO events (package_id, type, qty, occurred_on, recorded_at, unit_serial, unit_expiry, end_reason)
-		VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?, ?, ?)
-	`).bind(
-		event.packageId,
-		event.type,
-		event.qty,
-		event.occurredOn,
-		event.unitSerial ?? null,
-		event.unitExpiry ?? null,
-		event.endReason ?? null,
-	)))
+	await writeLedgerEvents(context.env.DB, plan.events)
 	return context.json({ opened: true, startedFirstUnit: plan.startFirstUnit }, 201)
 })
 
@@ -880,6 +932,8 @@ app.post('/api/unit-scans', async (context) => {
 		serial?: unknown
 		rawBarcode?: unknown
 		occurredOn?: unknown
+		markBoxOpened?: unknown
+		leftoverResolution?: unknown
 	}>().catch(() => null)
 	const gtin = typeof body?.gtin === 'string' ? body.gtin : ''
 	const lot = typeof body?.lot === 'string' && body.lot ? body.lot : undefined
@@ -887,9 +941,14 @@ app.post('/api/unit-scans', async (context) => {
 	const serial = typeof body?.serial === 'string' && body.serial ? body.serial : undefined
 	const rawBarcode = typeof body?.rawBarcode === 'string' && body.rawBarcode ? body.rawBarcode : null
 	const occurredOn = typeof body?.occurredOn === 'string' ? body.occurredOn : ''
+	const markBoxOpened = body?.markBoxOpened !== false
+	const leftoverResolution = body?.leftoverResolution
 	if (!isValidGtin(gtin) || (lot !== undefined && lot.length > 120)
 		|| (expiry !== undefined && !isIsoDate(expiry)) || (serial !== undefined && serial.length > 120)
-		|| (rawBarcode !== null && rawBarcode.length > 1024) || !isIsoDate(occurredOn)) {
+		|| (rawBarcode !== null && rawBarcode.length > 1024) || !isIsoDate(occurredOn)
+		|| (body?.markBoxOpened !== undefined && typeof body.markBoxOpened !== 'boolean')
+		|| (leftoverResolution !== undefined && (!markBoxOpened
+			|| (leftoverResolution !== 'keep' && leftoverResolution !== 'mark_used')))) {
 		return context.json({ error: 'invalid_unit_scan' }, 400)
 	}
 
@@ -907,6 +966,8 @@ app.post('/api/unit-scans', async (context) => {
 	const { results: candidateRows } = await context.env.DB.prepare(`
 		SELECT packages.id, products.contains_product_id AS containsProductId,
 			packages.lot, packages.expiry,
+			EXISTS (SELECT 1 FROM events AS opened
+				WHERE opened.package_id = packages.id AND opened.type = 'opened') AS isOpen,
 			(SELECT occurred_on FROM events AS received
 				WHERE received.package_id = packages.id AND received.type = 'received'
 				ORDER BY received.id LIMIT 1) AS receivedOn,
@@ -931,6 +992,44 @@ app.post('/api/unit-scans', async (context) => {
 		expiry,
 		serial,
 	}, candidateRows, usedSerialRows.map((event) => event.unit_serial))
+	if (match.kind === 'matched' && markBoxOpened) {
+		const candidate = candidateRows.find((row) => row.id === match.packageId)
+		if (candidate && !candidate.isOpen) {
+			const supply = await loadPackageOpeningState(context.env.DB, match.packageId)
+			if (!supply || !supply.is_received) return context.json({ error: 'package_not_found' }, 404)
+			if (leftoverResolution !== undefined && supply.previous_units_remaining <= 1) {
+				return context.json({ error: 'invalid_unit_scan' }, 400)
+			}
+			const activeUnit = supply.overlap_allowed ? null : await loadActiveUnit(context.env.DB, supply.product_id)
+			const plan = planPackageOpen({
+				packageId: match.packageId,
+				previousPackageId: supply.previous_package_id ?? undefined,
+				occurredOn,
+				previousUnitsRemaining: Math.max(0, supply.previous_units_remaining),
+				startFirstUnit: true,
+				leftoverResolution: leftoverResolution as 'keep' | 'mark_used' | undefined,
+				overlapAllowed: Boolean(supply.overlap_allowed),
+				activeUnit: activeUnit ? {
+					packageId: activeUnit.package_id,
+					serial: activeUnit.unit_serial ?? undefined,
+					expiry: activeUnit.unit_expiry ?? undefined,
+				} : undefined,
+				unitSerial: serial,
+				unitExpiry: expiry,
+			})
+			if (plan.kind === 'confirmation_required') {
+				return context.json({ error: 'leftover_confirmation_required', remainingUnits: plan.remainingUnits }, 409)
+			}
+			await writeLedgerEvents(context.env.DB, plan.events)
+			return context.json({
+				started: true,
+				opened: true,
+				implicit: false,
+				matchedBy: match.matchedBy,
+				serialAlreadyUsed: match.serialAlreadyUsed,
+			}, 201)
+		}
+	}
 	const activeUnit = unitProduct.overlap_allowed ? null : await context.env.DB.prepare(`
 		SELECT started.package_id, started.unit_serial, started.unit_expiry
 		FROM events AS started
@@ -985,6 +1084,7 @@ app.post('/api/unit-scans', async (context) => {
 	await context.env.DB.batch(statements)
 	return context.json({
 		started: true,
+		opened: false,
 		implicit: match.kind === 'implicit',
 		matchedBy: match.kind === 'matched' ? match.matchedBy : null,
 		serialAlreadyUsed: match.serialAlreadyUsed,

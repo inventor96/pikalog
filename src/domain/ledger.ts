@@ -1,10 +1,11 @@
 export type LedgerEventDraft = {
 	packageId: number
-	type: 'opened' | 'unit_started' | 'unit_ended'
-	qty: 1
+	type: 'opened' | 'unit_started' | 'unit_ended' | 'discarded'
+	qty: number
 	occurredOn: string
 	unitSerial?: string
 	unitExpiry?: string
+	inferred?: boolean
 	endReason?: 'planned'
 }
 
@@ -16,6 +17,7 @@ export type ActiveUnit = {
 
 export type PackageOpenInput = {
 	packageId: number
+	previousPackageId?: number
 	occurredOn: string
 	previousUnitsRemaining: number
 	startFirstUnit?: boolean
@@ -42,6 +44,15 @@ export type OpenPackageCandidate = {
 	expiry?: string
 	receivedOn: string
 	unitsRemaining: number
+	isOpen?: boolean
+}
+
+export type PackageScanCandidate = {
+	id: number
+	gtin: string | null
+	lot: string | null
+	expiry: string | null
+	receivedOn: string
 }
 
 export type UnitScanIdentity = {
@@ -56,7 +67,7 @@ export type UnitPackageMatch =
 	| {
 			kind: 'matched'
 			packageId: number
-			matchedBy: 'lot_expiry' | 'expiry' | 'gtin'
+			matchedBy: 'lot_expiry' | 'lot' | 'expiry' | 'gtin'
 			serialAlreadyUsed: boolean
 	  }
 	| { kind: 'implicit'; serialAlreadyUsed: boolean }
@@ -96,6 +107,10 @@ function validateInput(input: PackageOpenInput): void {
 	}
 	if (input.unitExpiry && !isIsoDate(input.unitExpiry)) {
 		throw new RangeError('unitExpiry must be a valid YYYY-MM-DD date')
+	}
+	if (input.previousPackageId !== undefined
+		&& (!Number.isSafeInteger(input.previousPackageId) || input.previousPackageId <= 0)) {
+		throw new RangeError('previousPackageId must be a positive integer')
 	}
 	if (input.activeUnit) {
 		if (!Number.isSafeInteger(input.activeUnit.packageId) || input.activeUnit.packageId <= 0) {
@@ -155,6 +170,25 @@ function oldestPackage(packages: readonly OpenPackageCandidate[]): OpenPackageCa
 	)[0]
 }
 
+export function matchPackageScan(
+	scan: { gtin: string; lot?: string; expiry?: string },
+	packages: readonly PackageScanCandidate[],
+): PackageScanCandidate[] {
+	const eligible = packages.filter((candidate) => candidate.gtin === scan.gtin)
+	const tiers = [
+		scan.lot && scan.expiry
+			? eligible.filter((candidate) => candidate.lot === scan.lot && candidate.expiry === scan.expiry)
+			: [],
+		scan.lot ? eligible.filter((candidate) => candidate.lot === scan.lot) : [],
+		scan.expiry ? eligible.filter((candidate) => candidate.expiry === scan.expiry) : [],
+		eligible,
+	]
+	const matches = tiers.find((tier) => tier.length > 0) ?? []
+	return [...matches].sort(
+		(first, second) => first.receivedOn.localeCompare(second.receivedOn) || first.id - second.id,
+	)
+}
+
 export function matchUnitScan(
 	scan: UnitScanIdentity,
 	packages: readonly OpenPackageCandidate[],
@@ -170,6 +204,11 @@ export function matchUnitScan(
 			(candidate) => candidate.lot === scan.lot && candidate.expiry === scan.expiry,
 		))
 		if (match) return { kind: 'matched', packageId: match.id, matchedBy: 'lot_expiry', serialAlreadyUsed }
+	}
+
+	if (scan.lot) {
+		const match = oldestPackage(eligible.filter((candidate) => candidate.lot === scan.lot))
+		if (match) return { kind: 'matched', packageId: match.id, matchedBy: 'lot', serialAlreadyUsed }
 	}
 
 	if (scan.expiry) {
@@ -200,8 +239,21 @@ export function planPackageOpen(input: PackageOpenInput): PackageOpenPlan {
 	if ((!startFirstUnit || input.previousUnitsRemaining <= 1) && input.leftoverResolution) {
 		throw new RangeError('leftoverResolution is only valid when starting with more than one unit remaining')
 	}
+	if (input.leftoverResolution === 'mark_used' && input.previousUnitsRemaining > 0 && !input.previousPackageId) {
+		throw new RangeError('previousPackageId is required to mark previous units used')
+	}
 
-	const events: LedgerEventDraft[] = [{ packageId: input.packageId, type: 'opened', qty: 1, occurredOn: input.occurredOn }]
+	const events: LedgerEventDraft[] = []
+	if (input.leftoverResolution === 'mark_used' && input.previousUnitsRemaining > 0) {
+		events.push({
+			packageId: input.previousPackageId!,
+			type: 'discarded',
+			qty: input.previousUnitsRemaining,
+			occurredOn: input.occurredOn,
+			inferred: true,
+		})
+	}
+	events.push({ packageId: input.packageId, type: 'opened', qty: 1, occurredOn: input.occurredOn })
 	if (startFirstUnit) {
 		events.push(...planUnitStart({
 			packageId: input.packageId,

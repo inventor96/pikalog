@@ -7,6 +7,7 @@ import PageLayout from '@/components/PageLayout.vue'
 import type { BarcodeParseResult } from '@/barcode/ingest'
 import { buildCatalogSuggestionUrl } from '@/domain/catalog-contribution'
 import { summarizeInventory } from '@/domain/inventory-summary'
+import { matchPackageScan } from '@/domain/ledger'
 
 type Category = {
   id: number
@@ -46,6 +47,12 @@ type InventoryPackage = {
   is_open: number
 }
 
+type LeftoverResolution = 'keep' | 'mark_used'
+type PendingOpeningAction =
+  | { kind: 'package'; packageId: number; startFirstUnit?: boolean; leftoverResolution?: LeftoverResolution }
+  | { kind: 'unit'; result: Extract<BarcodeParseResult, { kind: 'gs1' }>; markBoxOpened: boolean; leftoverResolution?: LeftoverResolution }
+type OpeningPrompt = { kind: 'start-choice' | 'leftovers'; remainingUnits: number }
+
 const categories = ref<Category[]>([])
 const products = ref<Product[]>([])
 const packages = ref<InventoryPackage[]>([])
@@ -72,6 +79,9 @@ const receivedOn = ref(todayIsoDate())
 const isSavingReceipt = ref(false)
 const receiptError = ref('')
 const openingPackageId = ref<number | null>(null)
+const pendingOpeningAction = ref<PendingOpeningAction | null>(null)
+const openingPrompt = ref<OpeningPrompt | null>(null)
+const startFirstUnitChoice = ref(false)
 const router = useRouter()
 
 function todayIsoDate(): string {
@@ -134,7 +144,7 @@ async function loadDashboard() {
   }
 }
 
-async function handleBarcodeDetected(result: BarcodeParseResult, mode: 'receive' | 'open') {
+async function handleBarcodeDetected(result: BarcodeParseResult, mode: 'receive' | 'open', markBoxOpened = true) {
   scannerOpen.value = false
   scanNotice.value = ''
   if (isRescanningReceipt.value) {
@@ -146,15 +156,17 @@ async function handleBarcodeDetected(result: BarcodeParseResult, mode: 'receive'
       scanNotice.value = 'This code does not identify a received package. Open the package from inventory instead.'
       return
     }
-    const productPackages = packages.value.filter((pkg) => pkg.gtin === result.fields.gtin)
-    const identityMatches = productPackages.filter((pkg) => {
-      if (result.fields.lot && result.fields.expiry) return pkg.lot === result.fields.lot && pkg.expiry === result.fields.expiry
-      if (result.fields.expiry) return pkg.expiry === result.fields.expiry
-      return true
-    })
-    const sortedMatches = [...identityMatches].sort((first, second) =>
-      first.received_on.localeCompare(second.received_on) || first.id - second.id,
-    )
+    const sortedMatches = matchPackageScan({
+      gtin: result.fields.gtin,
+      lot: result.fields.lot,
+      expiry: result.fields.expiry,
+    }, packages.value.map((pkg) => ({
+      id: pkg.id,
+      gtin: pkg.gtin,
+      lot: pkg.lot,
+      expiry: pkg.expiry,
+      receivedOn: pkg.received_on,
+    }))).map(({ id }) => packages.value.find((pkg) => pkg.id === id)!)
     const target = sortedMatches.find((pkg) => !pkg.is_open)
     if (target) {
       await openPackage(target.id)
@@ -164,7 +176,7 @@ async function handleBarcodeDetected(result: BarcodeParseResult, mode: 'receive'
       scanNotice.value = 'This package is already open. Scan a unit barcode to start the next unit.'
       return
     }
-    await startUnitFromScan(result)
+    await startUnitFromScan(result, markBoxOpened)
     return
   }
   if (categories.value.length === 0) await loadDashboard()
@@ -206,7 +218,11 @@ async function handleBarcodeDetected(result: BarcodeParseResult, mode: 'receive'
   receiptDialogOpen.value = true
 }
 
-async function startUnitFromScan(result: Extract<BarcodeParseResult, { kind: 'gs1' }>) {
+async function startUnitFromScan(
+  result: Extract<BarcodeParseResult, { kind: 'gs1' }>,
+  markBoxOpened = true,
+  leftoverResolution?: LeftoverResolution,
+) {
   const gtin = result.fields.gtin
   if (!gtin) {
     scanNotice.value = 'This scan has no GTIN. Open a package from inventory instead.'
@@ -224,6 +240,8 @@ async function startUnitFromScan(result: Extract<BarcodeParseResult, { kind: 'gs
         serial: result.fields.serial,
         rawBarcode: result.raw,
         occurredOn: todayIsoDate(),
+        markBoxOpened,
+        leftoverResolution,
       }),
     })
     if (response.status === 401) {
@@ -234,17 +252,30 @@ async function startUnitFromScan(result: Extract<BarcodeParseResult, { kind: 'gs
       scanNotice.value = 'No unit product matches this GTIN yet. Receive the unit product first and link it to its pack.'
       return
     }
+    if (response.status === 409) {
+      const data = await response.json() as { error: string; remainingUnits: number }
+      if (data.error === 'leftover_confirmation_required') {
+        pendingOpeningAction.value = { kind: 'unit', result, markBoxOpened }
+        openingPrompt.value = { kind: 'leftovers', remainingUnits: data.remainingUnits }
+        return
+      }
+    }
     if (!response.ok) throw new Error('Could not start this unit.')
 
     const data = await response.json() as {
       implicit: boolean
-      matchedBy: 'lot_expiry' | 'expiry' | 'gtin' | null
+      opened: boolean
+      matchedBy: 'lot_expiry' | 'lot' | 'expiry' | 'gtin' | null
       serialAlreadyUsed: boolean
     }
     scanNotice.value = data.implicit
       ? 'No received pack had units remaining, so this scan was recorded as an implicit unit.'
-      : `Unit started from the matching pack (${data.matchedBy?.replace('_', ' and ')} match).`
+      : data.opened
+        ? `Unit started and its box opened (${data.matchedBy?.replace('_', ' and ')} match).`
+        : `Unit started from the matching pack (${data.matchedBy?.replace('_', ' and ')} match).`
     if (data.serialAlreadyUsed) scanNotice.value += ' This serial was already recorded.'
+    pendingOpeningAction.value = null
+    openingPrompt.value = null
     await loadDashboard()
   } catch {
     scanNotice.value = 'The inventory service could not start this unit. Try again.'
@@ -299,7 +330,7 @@ function closeScanner() {
   }
 }
 
-async function openPackage(packageId: number) {
+async function openPackage(packageId: number, startFirstUnit?: boolean, leftoverResolution?: LeftoverResolution) {
   if (openingPackageId.value !== null) return
   openingPackageId.value = packageId
   scanNotice.value = ''
@@ -307,23 +338,55 @@ async function openPackage(packageId: number) {
     const response = await fetch(`/api/packages/${packageId}/open`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ occurredOn: todayIsoDate() }),
+      body: JSON.stringify({ occurredOn: todayIsoDate(), startFirstUnit, leftoverResolution }),
     })
     if (response.status === 401) {
       await router.replace({ name: 'login' })
       return
     }
     if (response.status === 409) {
-      scanNotice.value = 'This package needs an opening confirmation. Refresh inventory and try again.'
-      return
+      const data = await response.json() as { error: string; remainingUnits: number }
+      if (data.error === 'start_choice_required' || data.error === 'leftover_confirmation_required') {
+        pendingOpeningAction.value = { kind: 'package', packageId, startFirstUnit }
+        openingPrompt.value = {
+          kind: data.error === 'start_choice_required' ? 'start-choice' : 'leftovers',
+          remainingUnits: data.remainingUnits,
+        }
+        startFirstUnitChoice.value = false
+        return
+      }
     }
     if (!response.ok) throw new Error('Could not open this package.')
     scanNotice.value = 'Package opened and recorded in the supply ledger.'
+    pendingOpeningAction.value = null
+    openingPrompt.value = null
     await loadDashboard()
   } catch {
     scanNotice.value = 'The inventory service could not open this package. Try again.'
   } finally {
     openingPackageId.value = null
+  }
+}
+
+function cancelOpeningPrompt() {
+  openingPrompt.value = null
+  pendingOpeningAction.value = null
+  scanNotice.value = 'No changes were recorded.'
+}
+
+async function chooseStartFirstUnit() {
+  const action = pendingOpeningAction.value
+  openingPrompt.value = null
+  if (action?.kind === 'package') await openPackage(action.packageId, startFirstUnitChoice.value)
+}
+
+async function resolveLeftovers(resolution: LeftoverResolution) {
+  const action = pendingOpeningAction.value
+  openingPrompt.value = null
+  if (action?.kind === 'package') {
+    await openPackage(action.packageId, action.startFirstUnit, resolution)
+  } else if (action?.kind === 'unit') {
+    await startUnitFromScan(action.result, action.markBoxOpened, resolution)
   }
 }
 
@@ -475,6 +538,42 @@ onMounted(loadDashboard)
       @close="closeScanner"
       @detected="handleBarcodeDetected"
     />
+
+    <div v-if="openingPrompt" class="receipt-backdrop" @click.self="cancelOpeningPrompt">
+      <section class="receipt-dialog opening-dialog" role="dialog" aria-modal="true" aria-labelledby="opening-title">
+        <header class="receipt-heading">
+          <div>
+            <p class="eyebrow">SUPPLY LEDGER</p>
+            <h2 id="opening-title">
+              {{ openingPrompt.kind === 'start-choice' ? 'Open package' : 'Previous package has leftovers' }}
+            </h2>
+          </div>
+          <button class="receipt-close" type="button" aria-label="Cancel opening" @click="cancelOpeningPrompt">
+            <X :size="18" aria-hidden="true" />
+          </button>
+        </header>
+
+        <p class="opening-message">
+          {{ openingPrompt.kind === 'start-choice'
+            ? `${openingPrompt.remainingUnits} units remain in the previous package.`
+            : `${openingPrompt.remainingUnits} units remain in the previous package. Choose whether to keep them in stock or mark them used before starting this unit.` }}
+        </p>
+        <label v-if="openingPrompt.kind === 'start-choice'" class="opening-start-option">
+          <input v-model="startFirstUnitChoice" type="checkbox" />
+          <span>Start the first unit now</span>
+        </label>
+        <div class="receipt-actions">
+          <button class="receipt-cancel" type="button" @click="cancelOpeningPrompt">Cancel</button>
+          <template v-if="openingPrompt.kind === 'start-choice'">
+            <button class="receipt-submit" type="button" @click="chooseStartFirstUnit">Open package</button>
+          </template>
+          <template v-else>
+            <button class="receipt-cancel" type="button" @click="resolveLeftovers('keep')">Keep in stock</button>
+            <button class="receipt-submit" type="button" @click="resolveLeftovers('mark_used')">Mark used</button>
+          </template>
+        </div>
+      </section>
+    </div>
 
     <div v-if="receiptDialogOpen && scannedBarcode" class="receipt-backdrop" @click.self="closeReceiptDialog">
       <section class="receipt-dialog" role="dialog" aria-modal="true" aria-labelledby="receipt-title">

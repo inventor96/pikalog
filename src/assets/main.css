@@ -629,6 +629,32 @@
   background: var(--color-green-dark);
 }
 
+.opening-message {
+  margin: 20px 0 14px;
+  color: var(--color-ink-soft);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.opening-start-option {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 9px;
+  color: var(--color-ink-soft);
+  font-size: 12px;
+}
+
+.opening-start-option input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--color-green);
+}
+
+.opening-dialog .receipt-actions {
+  flex-wrap: wrap;
+}
+
 .category-section {
   padding-top: 36px;
 }

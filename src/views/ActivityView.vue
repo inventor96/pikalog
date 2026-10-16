@@ -37,7 +37,8 @@ const overview = ref<Overview | null>(null)
 const isLoading = ref(false)
 const errorMessage = ref('')
 
-function activityLabel(type: string): string {
+function activityLabel(type: string, inferred: number): string {
+  if (type === 'discarded' && inferred) return 'Marked used'
   switch (type) {
     case 'received': return 'Received'
     case 'opened': return 'Opened package'
@@ -147,7 +148,7 @@ onMounted(loadActivity)
       <div v-else-if="events.length" class="event-list" aria-label="Recent ledger events">
         <article v-for="event in events" :key="event.id" class="event-row">
           <span class="event-date">{{ event.occurredOn }}</span>
-          <span class="event-type">{{ activityLabel(event.type) }}</span>
+          <span class="event-type">{{ activityLabel(event.type, event.inferred) }}</span>
           <span class="event-product">{{ event.productName }}<template v-if="event.unitSerial"> · {{ event.unitSerial }}</template></span>
           <span v-if="event.inferred" class="event-reason">Inferred</span>
           <span v-if="event.endReason" class="event-reason">{{ event.endReason.replace('_', ' ') }}</span>
