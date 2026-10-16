@@ -6,9 +6,10 @@ import {
 import readerWasmUrl from 'zxing-wasm/reader/zxing_reader.wasm?url'
 
 const readerOptions: ReaderOptions = {
-	formats: ['DataMatrix', 'AllLinear'],
-	maxNumberOfSymbols: 1,
+	formats: ['DataMatrix', 'Code128'],
+	maxNumberOfSymbols: 255,
 	tryHarder: true,
+	returnErrors: true,
 }
 
 let readerReady: Promise<unknown> | undefined
@@ -28,6 +29,6 @@ async function initializeReader(): Promise<void> {
 
 export async function decodeBarcodeFrame(image: ImageData): Promise<string | undefined> {
 	await initializeReader()
-	const [result] = await readBarcodes(image, readerOptions)
-	return result?.text || undefined
+	const results = await readBarcodes(image, readerOptions)
+	return results.find((result) => result.contentType === 'GS1' && result.isValid)?.text || undefined
 }
