@@ -135,23 +135,28 @@ onMounted(loadOutlook)
       <div v-else-if="categoryForecasts.length" class="forecast-list">
         <article v-for="forecast in categoryForecasts" :key="forecast.categoryId" class="forecast-row">
           <div class="forecast-category">
+            <span class="forecast-measure-label">Category / stock</span>
             <strong>{{ forecast.categoryName }}</strong>
             <span>{{ forecast.stockUnits }} forecast-eligible units · {{ forecast.activeUnits }} active</span>
           </div>
           <div class="forecast-measure">
+            <span class="forecast-measure-label">Estimated run-out</span>
             <strong>{{ forecast.runOutDate ? formatShortDate(forecast.runOutDate) : '—' }}</strong>
             <span>{{ forecast.stockDays === null ? 'duration unavailable' : `${Math.ceil(forecast.stockDays)} estimated days` }}</span>
           </div>
           <div class="forecast-measure">
+            <span class="forecast-measure-label">Next to use</span>
             <strong>{{ forecast.nextPickProduct ?? 'No pick' }}</strong>
             <span>{{ forecast.nextPick === 'filler' ? `${forecast.fillerSlotsSafe} safe filler slots` : forecast.nextPick === 'hard' ? 'hard-expiry stock first' : 'No pick recommended' }}</span>
             <span v-if="forecast.nextPickAtRisk">Selected soft-expiry item may be used past its date.</span>
           </div>
           <div class="forecast-measure">
+            <span class="forecast-measure-label">Expiry waste (units)</span>
             <strong>{{ forecast.wasteForecast.preferred }} / {{ forecast.wasteForecast.tolerated }}</strong>
-            <span>preferred / tolerated waste</span>
+            <span>recommended / last-chance estimate</span>
           </div>
           <div class="forecast-measure">
+            <span class="forecast-measure-label">Quarterly surplus</span>
             <strong>{{ forecast.surplusPerQuarter === null ? '—' : forecast.surplusPerQuarter.toFixed(1) }}</strong>
             <span>
               {{ forecast.wasteForecast.preferred > 0 && forecast.fillerSlotsSafe === 0 && (forecast.surplusPerQuarter ?? 0) > 0
@@ -177,6 +182,33 @@ onMounted(loadOutlook)
       <p v-if="categoryForecasts.length && includeProjectedReceipts && !hasProjectedReceipts" class="activity-note">
         Projected receipts need two distinct dates after the first receipt date per product.
       </p>
+      <aside v-if="categoryForecasts.length" class="forecast-key" aria-label="Forecast metric definitions">
+        <p class="eyebrow">HOW TO READ</p>
+        <dl>
+          <div>
+            <dt>Category / stock</dt>
+            <dd>Forecast-eligible units on hand; active units are already in use.</dd>
+          </div>
+          <div>
+            <dt>Estimated run-out</dt>
+            <dd>Expected date and remaining days, based on estimated product wear.</dd>
+          </div>
+          <div>
+            <dt>Next to use</dt>
+            <dd>Expiry-aware pick recommendation; safe filler slots can be used before hard-expiry stock.</dd>
+          </div>
+          <div class="forecast-key-wide">
+            <dt>Expiry waste</dt>
+            <dd><strong>Recommended (first number):</strong> Units likely to be wasted if you follow the product's use-by guidance. For "finish by" items, use is scheduled early enough to finish before printed expiry; for "start by" items, it must begin by that date.</dd>
+            <dd><strong>Last-chance (second number):</strong> Units likely to be wasted even if you start using them on or before the printed expiry date. This allows "finish by" items to be started later, even if use may continue past expiry.</dd>
+            <dd><strong>Why compare them:</strong> The difference shows how many units depend on using stock later than the recommended timing. Use the first number for a stricter rotation plan; the second is a more lenient best case. For "start by" items, the estimates may be the same.</dd>
+          </div>
+          <div>
+            <dt>Quarterly surplus</dt>
+            <dd>Projected incoming units minus expected use over 90 days. A dash means rates are unavailable.</dd>
+          </div>
+        </dl>
+      </aside>
     </section>
 
   </PageLayout>
