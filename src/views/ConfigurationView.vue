@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { AlertCircle, Eye, EyeOff, Pencil, Plus, RefreshCw, RotateCcw, Save, Trash2, X } from '@lucide/vue'
 import { useRouter } from 'vue-router'
 import PageLayout from '@/components/PageLayout.vue'
+import { formatShortDateTime } from '@/domain/date-format'
 
 type Category = {
   id: number
@@ -329,7 +330,7 @@ onMounted(() => {
             : catalogStatus.status === 'error' ? 'Catalog sync failed'
               : catalogStatus.version ? `Catalog ${catalogStatus.version}` : 'Bundled catalog' }}
         </strong>
-        <span v-if="catalogStatus.lastSyncedAt">Synced {{ catalogStatus.lastSyncedAt.slice(0, 10) }}</span>
+        <span v-if="catalogStatus.lastSyncedAt">Synced {{ formatShortDateTime(catalogStatus.lastSyncedAt) }}</span>
         <span v-if="catalogStatus.lastError && catalogStatus.lastError !== 'catalog_schema_unsupported'">{{ catalogStatus.lastError }}</span>
         <span v-if="catalogStatusError" class="catalog-management-error">{{ catalogStatusError }}</span>
       </div>

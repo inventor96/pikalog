@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { AlertCircle, RefreshCw } from '@lucide/vue'
 import { useRouter } from 'vue-router'
 import PageLayout from '@/components/PageLayout.vue'
+import { formatShortDate } from '@/domain/date-format'
 
 type CategoryForecast = {
   categoryId: number
@@ -135,7 +136,7 @@ onMounted(loadOutlook)
             <span>{{ forecast.stockUnits }} unstarted units · {{ forecast.activeUnits }} active</span>
           </div>
           <div class="forecast-measure">
-            <strong>{{ forecast.runOutDate ?? '—' }}</strong>
+            <strong>{{ forecast.runOutDate ? formatShortDate(forecast.runOutDate) : '—' }}</strong>
             <span>{{ forecast.stockDays === null ? 'duration unavailable' : `${Math.ceil(forecast.stockDays)} estimated days` }}</span>
           </div>
           <div class="forecast-measure">
@@ -157,7 +158,7 @@ onMounted(loadOutlook)
           <div v-if="forecast.projectedReceipts.length" class="projected-receipt-list">
             <span class="projected-receipt-label">ESTIMATED ARRIVALS</span>
             <span v-for="receipt in forecast.projectedReceipts" :key="`${receipt.productName}-${receipt.arrivalOn}`">
-              {{ receipt.arrivalOn }} · {{ receipt.productName }} × {{ receipt.quantity }}<template v-if="receipt.expiry"> · expiry {{ receipt.expiry }}</template>
+              {{ formatShortDate(receipt.arrivalOn) }} · {{ receipt.productName }} × {{ receipt.quantity }}<template v-if="receipt.expiry"> · expiry {{ formatShortDate(receipt.expiry) }}</template>
             </span>
           </div>
           <ul v-if="forecast.assumptions.length || forecast.expiredUnits" class="forecast-assumptions">

@@ -6,6 +6,7 @@ import BarcodeScanner from '@/components/BarcodeScanner.vue'
 import PageLayout from '@/components/PageLayout.vue'
 import type { BarcodeParseResult } from '@/barcode/ingest'
 import { buildCatalogSuggestionUrl } from '@/domain/catalog-contribution'
+import { formatShortDate } from '@/domain/date-format'
 import { summarizeInventory } from '@/domain/inventory-summary'
 import { matchPackageScan } from '@/domain/ledger'
 
@@ -90,7 +91,7 @@ function todayIsoDate(): string {
 }
 
 const todayLabel = computed(() =>
-  new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).format(new Date()),
+  formatShortDate(todayIsoDate()),
 )
 const inventorySummary = computed(() => summarizeInventory(packages.value, products.value))
 const containedProducts = computed(() => products.value.filter((product) =>

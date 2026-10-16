@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { AlertCircle, RefreshCw } from '@lucide/vue'
 import { useRouter } from 'vue-router'
 import PageLayout from '@/components/PageLayout.vue'
+import { formatShortDate } from '@/domain/date-format'
 
 type ActivityEvent = {
   id: number
@@ -147,7 +148,7 @@ onMounted(loadActivity)
       </div>
       <div v-else-if="events.length" class="event-list" aria-label="Recent ledger events">
         <article v-for="event in events" :key="event.id" class="event-row">
-          <span class="event-date">{{ event.occurredOn }}</span>
+          <span class="event-date">{{ formatShortDate(event.occurredOn) }}</span>
           <span class="event-type">{{ activityLabel(event.type, event.inferred) }}</span>
           <span class="event-product">{{ event.productName }}<template v-if="event.unitSerial"> · {{ event.unitSerial }}</template></span>
           <span v-if="event.inferred" class="event-reason">Inferred</span>
