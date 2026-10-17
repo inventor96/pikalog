@@ -5,8 +5,11 @@ import { browserSupportsWebAuthn, startAuthentication } from '@simplewebauthn/br
 import type { PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/server'
 import { useRoute, useRouter } from 'vue-router'
 
+type AuthMethod = 'password' | 'passkey'
+
 const route = useRoute()
 const router = useRouter()
+const lastAuthMethodStorageKey = 'pikalog.last-auth-method'
 const password = ref('')
 const isConfigured = ref<boolean | null>(null)
 const passkeysAvailable = ref(false)
@@ -16,7 +19,17 @@ const isSubmitting = ref(false)
 const isPasskeySubmitting = ref(false)
 const errorMessage = ref('')
 
+function lastAuthMethod(): AuthMethod | null {
+	const stored = localStorage.getItem(lastAuthMethodStorageKey)
+	return stored === 'password' || stored === 'passkey' ? stored : null
+}
+
+function rememberAuthMethod(method: AuthMethod) {
+	localStorage.setItem(lastAuthMethodStorageKey, method)
+}
+
 onMounted(async () => {
+	let autoStartPasskey = false
 	try {
 		const response = await fetch('/api/auth/session', { cache: 'no-store' })
 		if (!response.ok) throw new Error('Could not check the authentication setup.')
@@ -25,12 +38,14 @@ onMounted(async () => {
 		passkeysAvailable.value = session.passkeysAvailable
 		supportsPasskeys.value = browserSupportsWebAuthn()
 		if (session.authenticated) await router.replace({ name: 'home' })
+		else autoStartPasskey = session.configured && session.passkeysAvailable && supportsPasskeys.value && lastAuthMethod() === 'passkey'
 	} catch {
 		isConfigured.value = null
 		errorMessage.value = 'The authentication service could not be reached.'
 	} finally {
 		isChecking.value = false
 	}
+	if (autoStartPasskey) void signInWithPasskey()
 })
 
 function loginDestination(): string {
@@ -56,6 +71,7 @@ async function signIn() {
 			body: JSON.stringify({ password: password.value }),
 		})
 		if (response.ok) {
+			rememberAuthMethod('password')
 			await finishSignIn()
 			return
 		}
@@ -90,6 +106,7 @@ async function signInWithPasskey() {
 			body: JSON.stringify({ challenge: options.challenge, response: assertion }),
 		})
 		if (verification.ok) {
+			rememberAuthMethod('passkey')
 			await finishSignIn()
 			return
 		}
