@@ -1,12 +1,13 @@
 export type LedgerEventDraft = {
 	packageId: number
-	type: 'opened' | 'unit_started' | 'unit_ended' | 'discarded'
+	type: 'opened' | 'unit_started' | 'unit_ended' | 'discarded' | 'adjusted'
 	qty: number
 	occurredOn: string
 	unitSerial?: string
 	unitExpiry?: string
 	inferred?: boolean
-	endReason?: 'planned'
+	endReason?: 'planned' | 'other'
+	note?: string
 }
 
 export type ActiveUnit = {

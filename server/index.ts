@@ -9,6 +9,7 @@ import {
 } from '../src/domain/ledger'
 import { calculateSupplyForecast, type ForecastEvent } from '../src/domain/forecast'
 import { estimateProjectedReceipts } from '../src/domain/receipts'
+import { planEventUndo, type UndoTargetType } from '../src/domain/undo'
 import { ensureSeeded, syncCatalog } from './catalog-sync'
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server'
 import { calculateDurationStatistics, type DurationLedgerEvent } from '../src/domain/statistics'
@@ -152,8 +153,8 @@ async function loadActiveUnit(db: D1Database, productId: number): Promise<{
 
 async function writeLedgerEvents(db: D1Database, events: readonly LedgerEventDraft[]): Promise<void> {
 	await db.batch(events.map((event) => db.prepare(`
-		INSERT INTO events (package_id, type, qty, occurred_on, recorded_at, unit_serial, unit_expiry, inferred, end_reason)
-		VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?, ?, ?, ?)
+		INSERT INTO events (package_id, type, qty, occurred_on, recorded_at, unit_serial, unit_expiry, inferred, end_reason, note)
+		VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?, ?, ?, ?, ?)
 	`).bind(
 		event.packageId,
 		event.type,
@@ -163,6 +164,7 @@ async function writeLedgerEvents(db: D1Database, events: readonly LedgerEventDra
 		event.unitExpiry ?? null,
 		event.inferred ? 1 : 0,
 		event.endReason ?? null,
+		event.note ?? null,
 	)))
 }
 
@@ -601,6 +603,9 @@ app.get('/api/activity', async (context) => {
 		SELECT events.id, events.package_id AS packageId, events.type, events.qty,
 			events.occurred_on AS occurredOn, events.unit_serial AS unitSerial,
 			events.unit_expiry AS unitExpiry, events.inferred, events.end_reason AS endReason,
+			packages.lot AS lot, packages.serial AS serial,
+			EXISTS (SELECT 1 FROM events AS undoing WHERE undoing.note = 'undo:' || events.id) AS undone,
+			CASE WHEN events.note LIKE 'undo:%' THEN CAST(substr(events.note, 6) AS INTEGER) END AS undoOfEventId,
 			COALESCE(unit_products.id, products.id) AS productId,
 			COALESCE(unit_products.name, products.name) AS productName,
 			categories.id AS categoryId, categories.name AS categoryName,
@@ -616,6 +621,10 @@ app.get('/api/activity', async (context) => {
 		qty: number
 		unitSerial: string | null
 		unitExpiry: string | null
+		lot: string | null
+		serial: string | null
+		undone: number
+		undoOfEventId: number | null
 		categoryName: string
 	}>()
 	const durationEvents = results.filter(
@@ -626,6 +635,79 @@ app.get('/api/activity', async (context) => {
 		events: results.slice(-30).reverse(),
 		durationStats: calculateDurationStatistics(durationEvents),
 	})
+})
+
+app.post('/api/events/:id/undo', async (context) => {
+	const eventId = Number(context.req.param('id'))
+	const body = await context.req.json<{ occurredOn?: unknown }>().catch(() => null)
+	const occurredOn = typeof body?.occurredOn === 'string'
+		? body.occurredOn
+		: new Date().toISOString().slice(0, 10)
+	if (!Number.isSafeInteger(eventId) || eventId <= 0 || !isIsoDate(occurredOn)) {
+		return context.json({ error: 'invalid_undo' }, 400)
+	}
+
+	const target = await context.env.DB.prepare(`
+		SELECT events.id, events.package_id AS packageId, events.type, events.qty,
+			events.occurred_on AS occurredOn, events.unit_expiry AS unitExpiry, events.note,
+			products.contains_qty AS containsQty
+		FROM events
+		JOIN packages ON packages.id = events.package_id
+		JOIN effective_products AS products ON products.id = packages.product_id
+		WHERE events.id = ?
+	`).bind(eventId).first<{
+		id: number
+		packageId: number
+		type: UndoTargetType
+		qty: number
+		occurredOn: string
+		unitExpiry: string | null
+		note: string | null
+		containsQty: number | null
+	}>()
+	if (!target) return context.json({ error: 'event_not_found' }, 404)
+
+	const undoing = await context.env.DB.prepare(`
+		SELECT 1 AS undone FROM events AS undoing WHERE undoing.note = 'undo:' || ? LIMIT 1
+	`).bind(eventId).first<{ undone: number }>()
+
+	let isUnitActive = false
+	if (target.type === 'unit_started') {
+		const ended = await context.env.DB.prepare(`
+			SELECT 1 AS ended FROM events
+			WHERE events.package_id = ? AND events.type = 'unit_ended'
+				AND (events.occurred_on > ? OR (events.occurred_on = ? AND events.id > ?))
+			LIMIT 1
+		`).bind(target.packageId, target.occurredOn, target.occurredOn, eventId)
+			.first<{ ended: number }>()
+		isUnitActive = !ended
+	}
+
+	const packageEvents = await context.env.DB.prepare(
+		'SELECT COUNT(*) AS count FROM events WHERE package_id = ?',
+	).bind(target.packageId).first<{ count: number }>()
+
+	const plan = planEventUndo({
+		id: target.id,
+		packageId: target.packageId,
+		type: target.type,
+		qty: target.qty,
+		occurredOn: target.occurredOn,
+		unitExpiry: target.unitExpiry,
+		note: target.note,
+	}, {
+		occurredOn,
+		isUndone: Boolean(undoing),
+		isUnitActive,
+		packageContainsQty: target.containsQty,
+		packageEventCount: packageEvents?.count ?? 0,
+	})
+	if (plan.kind === 'not_reversible') {
+		return context.json({ error: 'undo_not_reversible', reason: plan.reason }, 409)
+	}
+
+	await writeLedgerEvents(context.env.DB, plan.events)
+	return context.json({ undone: true })
 })
 
 app.get('/api/settings', async (context) => {
@@ -1136,7 +1218,10 @@ app.post('/api/receipts', async (context) => {
 	if (!product) return context.json({ error: 'product_not_found' }, 404)
 	if (serial) {
 		const existingPackage = await context.env.DB.prepare(`
-			SELECT id FROM packages WHERE serial = ? AND implicit = 0
+			SELECT packages.id FROM packages
+			JOIN events AS received ON received.package_id = packages.id AND received.type = 'received'
+			WHERE packages.serial = ? AND packages.implicit = 0
+				AND NOT EXISTS (SELECT 1 FROM events AS undoing WHERE undoing.note = 'undo:' || received.id)
 		`).bind(serial).first<{ id: number }>()
 		if (existingPackage) return context.json({ error: 'serial_already_received' }, 409)
 	}
@@ -1263,7 +1348,9 @@ app.post('/api/unit-scans', async (context) => {
 				WHERE received.package_id = packages.id AND received.type = 'received')
 	`).bind(unitProduct.id).all<OpenPackageCandidate>()
 	const { results: usedSerialRows } = await context.env.DB.prepare(`
-		SELECT unit_serial FROM events WHERE unit_serial IS NOT NULL
+		SELECT unit_serial FROM events
+		WHERE unit_serial IS NOT NULL
+			AND NOT EXISTS (SELECT 1 FROM events AS undoing WHERE undoing.note = 'undo:' || events.id)
 	`).all<{ unit_serial: string }>()
 	const match = matchUnitScan({
 		productId: unitProduct.id,

@@ -12,7 +12,11 @@ type ActivityEvent = {
   inferred: number
   productName: string
   unitSerial: string | null
+  serial: string | null
+  lot: string | null
   endReason: string | null
+  undone: number
+  undoOfEventId: number | null
 }
 
 type DurationStatistic = {
@@ -37,6 +41,9 @@ const durationStats = ref<DurationStatistic[]>([])
 const overview = ref<Overview | null>(null)
 const isLoading = ref(false)
 const errorMessage = ref('')
+const undoingId = ref<number | null>(null)
+
+const reversibleTypes = new Set(['received', 'discarded', 'unit_started', 'adjusted'])
 
 function activityLabel(type: string, inferred: number): string {
   if (type === 'discarded' && inferred) return 'Marked used'
@@ -47,6 +54,57 @@ function activityLabel(type: string, inferred: number): string {
     case 'unit_ended': return 'Ended unit'
     case 'discarded': return 'Discarded'
     default: return 'Stock adjusted'
+  }
+}
+
+function eventLabel(event: ActivityEvent): string {
+  if (event.undoOfEventId === null) return activityLabel(event.type, event.inferred)
+  const target = events.value.find((candidate) => candidate.id === event.undoOfEventId)
+  return target ? `Undid ${activityLabel(target.type, target.inferred)}` : 'Undid event'
+}
+
+function identifierFor(event: ActivityEvent): string {
+  return [event.unitSerial ?? event.serial, event.lot].filter(Boolean).join(' · ')
+}
+
+function canUndo(event: ActivityEvent): boolean {
+  return !event.undone && event.undoOfEventId === null && reversibleTypes.has(event.type)
+}
+
+function todayIsoDate(): string {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+}
+
+async function undoEvent(event: ActivityEvent) {
+  const label = eventLabel(event)
+  if (!window.confirm(`Undo "${label}"? A correcting entry will be appended to the ledger.`)) return
+  undoingId.value = event.id
+  errorMessage.value = ''
+  try {
+    const response = await fetch(`/api/events/${event.id}/undo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ occurredOn: todayIsoDate() }),
+    })
+    if (response.status === 401) {
+      await router.replace({ name: 'login' })
+      return
+    }
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null) as { reason?: string } | null
+      throw new Error(payload?.reason ?? '')
+    }
+    await loadActivity()
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : ''
+    errorMessage.value = reason === 'package_has_history'
+      ? 'This receipt cannot be undone because the package has later activity.'
+      : reason === 'structural_event'
+        ? 'This action cannot be undone.'
+        : 'The action could not be undone. Try again.'
+  } finally {
+    undoingId.value = null
   }
 }
 
@@ -149,10 +207,12 @@ onMounted(loadActivity)
       <div v-else-if="events.length" class="event-list" aria-label="Recent ledger events">
         <article v-for="event in events" :key="event.id" class="event-row">
           <span class="event-date">{{ formatShortDate(event.occurredOn) }}</span>
-          <span class="event-type">{{ activityLabel(event.type, event.inferred) }}</span>
-          <span class="event-product">{{ event.productName }}<template v-if="event.unitSerial"> · {{ event.unitSerial }}</template></span>
+          <span class="event-type">{{ eventLabel(event) }}</span>
+          <span class="event-product">{{ event.productName }}<template v-if="identifierFor(event)"> · {{ identifierFor(event) }}</template></span>
           <span v-if="event.inferred" class="event-reason">Inferred</span>
           <span v-if="event.endReason" class="event-reason">{{ event.endReason.replace('_', ' ') }}</span>
+          <span v-if="event.undone" class="event-undone">Undone</span>
+          <button v-if="canUndo(event)" class="event-undo" type="button" :disabled="undoingId !== null" @click="undoEvent(event)">Undo</button>
         </article>
       </div>
       <p v-else class="activity-note">No ledger events yet.</p>

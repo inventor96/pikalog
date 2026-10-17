@@ -36,6 +36,7 @@ type FakeEvent = {
 	unit_expiry?: string | null
 	end_reason?: string | null
 	inferred?: number
+	note?: string | null
 }
 
 type FakePasskey = {
@@ -244,8 +245,10 @@ function createDatabase() {
 							})[0]
 						const previousProduct = products.find((item) => item.id === previous?.product_id)
 						const previousUnitsRemaining = previous && previousProduct
-							? (previousProduct.contains_qty ?? 1) - events.filter((event) => event.package_id === previous.id
-								&& (event.type === 'unit_started' || event.type === 'discarded')).reduce((sum, event) => sum + event.qty, 0)
+							? (previousProduct.contains_qty ?? 1)
+								+ events.filter((event) => event.package_id === previous.id && event.type === 'adjusted').reduce((sum, event) => sum + event.qty, 0)
+								- events.filter((event) => event.package_id === previous.id
+									&& (event.type === 'unit_started' || event.type === 'discarded')).reduce((sum, event) => sum + event.qty, 0)
 							: 0
 						return {
 							id: pkg.id,
@@ -287,8 +290,42 @@ function createDatabase() {
 						}
 						return (products.find((product) => product.id === Number(values[0])) ?? null) as T | null
 					}
-					if (query.includes('SELECT id FROM packages WHERE serial = ?')) {
-						return (packages.find((pkg) => pkg.serial === String(values[0]) && !pkg.implicit) ?? null) as T | null
+					if (query.includes('SELECT packages.id FROM packages') && query.includes('packages.serial = ?')) {
+						const pkg = packages.find((item) => item.serial === String(values[0]) && !item.implicit)
+						if (!pkg) return null
+						const received = events.find((event) => event.package_id === pkg.id && event.type === 'received')
+						if (received && events.some((event) => event.note === `undo:${received.id}`)) return null
+						return { id: pkg.id } as T
+					}
+					if (query.includes('FROM events') && query.includes('products.contains_qty AS containsQty') && query.includes('WHERE events.id = ?')) {
+						const event = events.find((item) => item.id === Number(values[0]))
+						if (!event) return null
+						const pkg = packages.find((item) => item.id === event.package_id)
+						const product = products.find((item) => item.id === pkg?.product_id)
+						return {
+							id: event.id,
+							packageId: event.package_id,
+							type: event.type,
+							qty: event.qty,
+							occurredOn: event.occurred_on,
+							unitExpiry: event.unit_expiry ?? null,
+							note: event.note ?? null,
+							containsQty: product?.contains_qty ?? null,
+						} as T
+					}
+					if (query.includes('FROM events AS undoing')) {
+						const undone = events.some((event) => event.note === `undo:${Number(values[0])}`)
+						return (undone ? { undone: 1 } : null) as T | null
+					}
+					if (query.includes('SELECT 1 AS ended FROM events')) {
+						const ended = events.some((event) => event.package_id === Number(values[0])
+							&& event.type === 'unit_ended'
+							&& (event.occurred_on > String(values[1])
+								|| (event.occurred_on === String(values[2]) && event.id > Number(values[3]))))
+						return (ended ? { ended: 1 } : null) as T | null
+					}
+					if (query.includes('SELECT COUNT(*) AS count FROM events WHERE package_id = ?')) {
+						return { count: events.filter((event) => event.package_id === Number(values[0])).length } as T
 					}
 					if (query.includes('SELECT lock_level, locked_until')) {
 						const attempt = loginAttempts.get(String(values[0]))
@@ -325,6 +362,7 @@ function createDatabase() {
 								const unitProduct = products.find((item) => item.id === product?.contains_product_id)
 								const category = categories.find((item) => item.id === product?.category_id)
 								if (!pkg || !product || !category) return []
+								const parsedUndo = event.note?.startsWith('undo:') ? Number(event.note.slice(5)) : null
 								return [{
 									id: event.id,
 									packageId: event.package_id,
@@ -335,6 +373,10 @@ function createDatabase() {
 									unitExpiry: event.unit_expiry ?? null,
 									inferred: event.inferred ?? 0,
 									endReason: event.end_reason ?? null,
+									lot: pkg.lot ?? null,
+									serial: pkg.serial ?? null,
+									undone: events.some((undoing) => undoing.note === `undo:${event.id}`) ? 1 : 0,
+									undoOfEventId: parsedUndo,
 									productId: unitProduct?.id ?? product.id,
 									productName: unitProduct?.name ?? product.name,
 									categoryId: category.id,
@@ -346,7 +388,9 @@ function createDatabase() {
 					}
 					if (query.includes('FROM categories') || query.includes('FROM effective_categories')) return { results: categories as T[] }
 					if (query.includes('unit_serial FROM events')) {
-						return { results: events.filter((event) => event.unit_serial).map((event) => ({ unit_serial: event.unit_serial! })) as T[] }
+						return { results: events
+							.filter((event) => event.unit_serial && !events.some((undoing) => undoing.note === `undo:${event.id}`))
+							.map((event) => ({ unit_serial: event.unit_serial! })) as T[] }
 					}
 					if (query.includes('products.contains_product_id = ?')) {
 						return {
@@ -354,6 +398,7 @@ function createDatabase() {
 								const product = products.find((item) => item.id === pkg.product_id)
 								const received = events.find((event) => event.package_id === pkg.id && event.type === 'received')
 								if (!product || product.contains_product_id !== Number(values[0]) || !received) return []
+								const adjusted = events.filter((event) => event.package_id === pkg.id && event.type === 'adjusted').reduce((sum, event) => sum + event.qty, 0)
 								const consumed = events.filter((event) => event.package_id === pkg.id
 									&& (event.type === 'unit_started' || event.type === 'discarded')).reduce((sum, event) => sum + event.qty, 0)
 								return [{
@@ -362,7 +407,7 @@ function createDatabase() {
 									lot: pkg.lot ?? undefined,
 									expiry: pkg.expiry ?? undefined,
 									receivedOn: received.occurred_on,
-									unitsRemaining: Math.max(0, (product.contains_qty ?? 1) - consumed),
+									unitsRemaining: Math.max(0, (product.contains_qty ?? 1) + adjusted - consumed),
 									isOpen: events.some((event) => event.package_id === pkg.id && event.type === 'opened'),
 								}] as T[]
 							}),
@@ -451,6 +496,7 @@ function createDatabase() {
 							unit_expiry: values[5] === null ? null : String(values[5]),
 							inferred: Number(values[6] ?? 0),
 							end_reason: values[7] === null ? null : String(values[7]),
+							note: values[8] === undefined || values[8] === null ? null : String(values[8]),
 						})
 					}
 				}
@@ -970,6 +1016,10 @@ describe('Worker authentication routes', () => {
 			unitExpiry: null,
 			inferred: 0,
 			endReason: null,
+			lot: 'LOT-8',
+			serial: null,
+			undone: 0,
+			undoOfEventId: null,
 			productId: 1,
 			productName: 'Sensor pack',
 			categoryId: 1,
@@ -1007,6 +1057,151 @@ describe('Worker authentication routes', () => {
 		expect(env.DB.packages).toHaveLength(2)
 		expect(env.DB.events).toHaveLength(7)
 	})
+
+	it('undoes ledger events by appending compensating entries and frees their serials', async () => {
+		const env = createEnv({ password: 'household passphrase' })
+		const cookie = await authenticatedCookie(env)
+		const jsonHeaders = { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' }
+
+		const unitResponse = await app.request('/api/products', {
+			method: 'POST',
+			headers: jsonHeaders,
+			body: JSON.stringify({
+				categoryId: 1,
+				manufacturer: 'Acme',
+				name: 'Sensor',
+				gtin: '00036000291452',
+				containsQty: 1,
+				ratedWearDays: 10,
+			}),
+		}, env)
+		const unitData = await unitResponse.json() as { product: { id: number } }
+		const packResponse = await app.request('/api/products', {
+			method: 'POST',
+			headers: jsonHeaders,
+			body: JSON.stringify({
+				categoryId: 1,
+				manufacturer: 'Acme',
+				name: 'Sensor pack',
+				gtin: '09506000134352',
+				containsProductId: unitData.product.id,
+				containsQty: 2,
+			}),
+		}, env)
+		const packData = await packResponse.json() as { product: { id: number } }
+		await app.request('/api/receipts', {
+			method: 'POST',
+			headers: jsonHeaders,
+			body: JSON.stringify({ productId: packData.product.id, lot: 'L1', serial: 'BOX-1', expiry: '2028-12-31', receivedOn: '2026-10-14' }),
+		}, env)
+		const startResponse = await app.request('/api/unit-scans', {
+			method: 'POST',
+			headers: jsonHeaders,
+			body: JSON.stringify({ gtin: '00036000291452', lot: 'L1', expiry: '2028-12-31', serial: 'U1', occurredOn: '2026-10-15' }),
+		}, env)
+		const duplicateStartResponse = await app.request('/api/unit-scans', {
+			method: 'POST',
+			headers: jsonHeaders,
+			body: JSON.stringify({ gtin: '00036000291452', lot: 'L1', expiry: '2028-12-31', serial: 'U1', occurredOn: '2026-10-15' }),
+		}, env)
+		expect(startResponse.status).toBe(201)
+		expect(duplicateStartResponse.status).toBe(409)
+		expect(env.DB.events).toMatchObject([
+			{ id: 1, type: 'received' },
+			{ id: 2, type: 'opened' },
+			{ id: 3, type: 'unit_started', unit_serial: 'U1' },
+		])
+
+		const undoStartResponse = await app.request('/api/events/3/undo', {
+			method: 'POST', headers: jsonHeaders, body: JSON.stringify({ occurredOn: '2026-10-17' }),
+		}, env)
+		expect(undoStartResponse.status).toBe(200)
+		expect(env.DB.events).toMatchObject([
+			{ id: 1, type: 'received' },
+			{ id: 2, type: 'opened' },
+			{ id: 3, type: 'unit_started', unit_serial: 'U1' },
+			{ id: 4, type: 'adjusted', qty: 1, note: 'undo:3' },
+			{ id: 5, type: 'unit_ended', occurred_on: '2026-10-15', end_reason: 'other', unit_serial: null, note: 'undo:3' },
+		])
+		const inventoryAfterUndo = await (await app.request('/api/inventory', { headers: { Cookie: cookie } }, env)).json() as {
+			packages: Array<{ id: number; units_remaining: number }>
+		}
+		expect(inventoryAfterUndo.packages).toMatchObject([{ id: 1, units_remaining: 2 }])
+
+		const rescanResponse = await app.request('/api/unit-scans', {
+			method: 'POST',
+			headers: jsonHeaders,
+			body: JSON.stringify({ gtin: '00036000291452', lot: 'L1', expiry: '2028-12-31', serial: 'U1', occurredOn: '2026-10-18' }),
+		}, env)
+		expect(rescanResponse.status).toBe(201)
+		expect(env.DB.events.filter((event) => event.type === 'unit_started')).toHaveLength(2)
+
+		const repeatedUndo = await app.request('/api/events/3/undo', {
+			method: 'POST', headers: jsonHeaders, body: JSON.stringify({ occurredOn: '2026-10-18' }),
+		}, env)
+		const undoOfUndo = await app.request('/api/events/4/undo', {
+			method: 'POST', headers: jsonHeaders, body: JSON.stringify({ occurredOn: '2026-10-18' }),
+		}, env)
+		const undoOpened = await app.request('/api/events/2/undo', {
+			method: 'POST', headers: jsonHeaders, body: JSON.stringify({ occurredOn: '2026-10-18' }),
+		}, env)
+		const undoEnded = await app.request('/api/events/5/undo', {
+			method: 'POST', headers: jsonHeaders, body: JSON.stringify({ occurredOn: '2026-10-18' }),
+		}, env)
+		expect(repeatedUndo.status).toBe(409)
+		expect(await repeatedUndo.json()).toMatchObject({ reason: 'already_undone' })
+		expect(undoOfUndo.status).toBe(409)
+		expect(await undoOfUndo.json()).toMatchObject({ reason: 'undo_event' })
+		expect(undoOpened.status).toBe(409)
+		expect(await undoOpened.json()).toMatchObject({ reason: 'structural_event' })
+		expect(undoEnded.status).toBe(409)
+		expect(await undoEnded.json()).toMatchObject({ reason: 'undo_event' })
+
+		const blockedReceiptUndo = await app.request('/api/events/1/undo', {
+			method: 'POST', headers: jsonHeaders, body: JSON.stringify({ occurredOn: '2026-10-18' }),
+		}, env)
+		expect(blockedReceiptUndo.status).toBe(409)
+		expect(await blockedReceiptUndo.json()).toMatchObject({ reason: 'package_has_history' })
+
+		const secondReceipt = await app.request('/api/receipts', {
+			method: 'POST',
+			headers: jsonHeaders,
+			body: JSON.stringify({ productId: packData.product.id, lot: 'L2', serial: 'BOX-2', expiry: '2028-12-31', receivedOn: '2026-10-16' }),
+		}, env)
+		expect(secondReceipt.status).toBe(201)
+		const secondReceiptId = env.DB.events.at(-1)!.id
+		const cleanUndo = await app.request(`/api/events/${secondReceiptId}/undo`, {
+			method: 'POST', headers: jsonHeaders, body: JSON.stringify({ occurredOn: '2026-10-18' }),
+		}, env)
+		expect(cleanUndo.status).toBe(200)
+		const inventoryAfterReceivedUndo = await (await app.request('/api/inventory', { headers: { Cookie: cookie } }, env)).json() as {
+			packages: Array<Record<string, unknown>>
+		}
+		expect(inventoryAfterReceivedUndo.packages).toContainEqual(
+			expect.objectContaining({ serial: 'BOX-2', units_remaining: 0 }),
+		)
+		const rereceipt = await app.request('/api/receipts', {
+			method: 'POST',
+			headers: jsonHeaders,
+			body: JSON.stringify({ productId: packData.product.id, lot: 'L2', serial: 'BOX-2', expiry: '2028-12-31', receivedOn: '2026-10-18' }),
+		}, env)
+		expect(rereceipt.status).toBe(201)
+
+		const activity = await (await app.request('/api/activity', { headers: { Cookie: cookie } }, env)).json() as {
+			events: Array<Record<string, unknown>>
+			durationStats: Array<{ sampleCount: number }>
+		}
+		expect(activity.events.find((event) => event.id === 3)).toMatchObject({ undone: 1 })
+		expect(activity.events.find((event) => event.id === 4)).toMatchObject({ undoOfEventId: 3 })
+		expect(activity.events.find((event) => event.id === secondReceiptId)).toMatchObject({
+			type: 'received', serial: 'BOX-2', lot: 'L2', undone: 1,
+		})
+		expect(activity.events.find((event) => event.undoOfEventId === secondReceiptId)).toMatchObject({
+			type: 'adjusted', qty: -2,
+		})
+		expect(activity.durationStats).toEqual([])
+	})
+
 
 	it('matches a unit scan to its linked pack and consumes one remaining unit', async () => {
 		const env = createEnv({ password: 'household passphrase' })
