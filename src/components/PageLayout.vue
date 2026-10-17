@@ -34,7 +34,6 @@ async function signOut() {
     <header class="topbar">
       <div class="breadcrumb"><span>PIKALOG</span><span class="breadcrumb-divider">/</span><span>{{ section }}</span></div>
       <div class="topbar-status">
-        <span class="status-dot"></span>Private workspace
         <button class="signout-button" type="button" :disabled="isSigningOut" @click="signOut">
           <LogOut :size="14" aria-hidden="true" />
           <span>{{ isSigningOut ? 'Signing out' : 'Sign out' }}</span>

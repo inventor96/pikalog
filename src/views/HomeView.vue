@@ -595,9 +595,9 @@ onMounted(loadDashboard)
           <tbody v-for="category in inventorySummary" :key="category.categoryId ?? category.categoryName">
             <tr class="inventory-category-row">
               <th scope="row">{{ category.categoryName }}</th>
-              <td>{{ category.itemCount }}</td>
-              <td>{{ category.availableBoxCount }}</td>
-              <td>{{ category.pastDateUnits }}</td>
+              <td data-label="On hand">{{ category.itemCount }}</td>
+              <td data-label="Boxes">{{ category.availableBoxCount }}</td>
+              <td data-label="Past-date">{{ category.pastDateUnits }}</td>
             </tr>
             <template v-if="category.products.length > 1">
               <tr v-for="product in category.products" :key="product.groupKey" class="inventory-product-row">
@@ -605,9 +605,9 @@ onMounted(loadDashboard)
                   <span>{{ product.manufacturer }} {{ product.productName }}</span>
                   <small v-if="product.gtin">{{ product.gtin }}</small>
                 </th>
-                <td>{{ product.itemCount }}</td>
-                <td>{{ product.availableBoxCount }}</td>
-                  <td>{{ product.pastDateUnits }}</td>
+                <td data-label="On hand">{{ product.itemCount }}</td>
+                <td data-label="Boxes">{{ product.availableBoxCount }}</td>
+                  <td data-label="Past-date">{{ product.pastDateUnits }}</td>
               </tr>
             </template>
           </tbody>
