@@ -1,9 +1,9 @@
 {
-	"version": "2026.10.15",
+	"version": "2026.10.16",
 	"schemaVersion": 1,
 	"files": {
-		"categories.json": "f1ae09741b117dfa05179ab24e2df36a5032f9d2002c0d253a30f45ba76baf4d",
-		"products.json": "f1247668af88d1f9ed5c964304ded1775b315acd4de20390c864872465db63c8",
+		"categories.json": "440402464a8f35f478cd1de46e5bbd8582f36de69ab260c6689eb79d434fea57",
+		"products.json": "84d3ec077e8a56ff37c3d4547418d516d3e335c7c3da124dfbf6396270b74ce7",
 		"barcode_formats.json": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
 	}
 }

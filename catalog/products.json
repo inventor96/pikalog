@@ -103,5 +103,35 @@
 		"expiryStrictness": "soft",
 		"sourceUrl": "https://www.diabetes.shop/reservoirs/extended-reservoir/extended-reservoir",
 		"verified": true
+	},
+	{
+		"key": "novonordisk.novolog_100_10",
+		"categoryKey": "fast_insulin",
+		"manufacturer": "Novo Nordisk",
+		"name": "NovoLog",
+		"gtin": "00301697501116",
+		"containsProductKey": null,
+		"containsQty": 1,
+		"ratedWearDays": null,
+		"minSamples": 3,
+		"expiryRule": "finish_by",
+		"expiryStrictness": "soft",
+		"sourceUrl": "https://www.mcguff.com/insulin-novologreg-insulin-aspart-rdna-origin-injection-100uml-mdv-10ml-vial",
+		"verified": true
+	},
+	{
+		"key": "sanofi.lantus_100_10",
+		"categoryKey": "long_insulin",
+		"manufacturer": "Sanofi",
+		"name": "Lantus",
+		"gtin": "00300882220337",
+		"containsProductKey": null,
+		"containsQty": 1,
+		"ratedWearDays": null,
+		"minSamples": 3,
+		"expiryRule": "finish_by",
+		"expiryStrictness": "soft",
+		"sourceUrl": "https://www.mcguff.com/insulin-lantusreg-insulin-glargine-injection-100uml-mdv-10ml-vial",
+		"verified": true
 	}
 ]

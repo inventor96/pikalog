@@ -18,5 +18,15 @@
 		"key": "test_strip",
 		"name": "Test strip",
 		"overlapAllowed": false
+	},
+	{
+		"key": "fast_insulin",
+		"name": "Insulin (Fast-acting)",
+		"overlapAllowed": false
+	},
+	{
+		"key": "long_insulin",
+		"name": "Insulin (Long-acting)",
+		"overlapAllowed": false
 	}
 ]
