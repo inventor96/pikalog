@@ -16,7 +16,85 @@ This project is intended to be set up per-person, meaning each individual user s
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/inventor96/pikalog)
 
-Each deployment runs in its owner's Cloudflare account. Pikalog is an early-stage project; the deploy flow and fresh-account setup still need end-to-end verification before the button is considered release-ready.
+### Passkeys
+
+After signing in, you can add passkeys on the Configuration page. Enrollment requires the household password again.
+
+**Technical Notes for Advanced Usage:** Each passkey belongs to the exact hostname where it was added and requires HTTPS. So changing between a `workers.dev` address and a custom domain requires enrolling again on the new hostname. The household password must remain configured as a recovery method.
+
+## Update your app
+
+The catalog sync updates public catalog data only. It does not update the app code or database schema. To update your app with upstream changes, you'll need to do a one-time set up of a GitHub Actions workflow that you can use repeatedly thereafter. If you've already done the setup, [jump to `Doing the update`](#doing-the-update) below.
+
+**Warning:** The update workflow replaces your repository's contents with the upstream code. Any local modifications to tracked files will be lost (your `.github/workflows` directory is preserved as-is, so upstream changes to CI workflows will not reach you). Back up your D1 data first if you are unsure.
+
+### Setup
+
+Ensure you're viewing your own repository on GitHub (the one Cloudflare created for you). Copy the workflow file contents below and then click "Add file" > "Create new file" above. Set the file name to `.github/workflows/sync.yml`, and then paste the workflow contents. Click the "Commit changes..." button to save the workflow.
+
+```yaml
+name: Update Pikalog app with upstream changes
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sync_latest_from_upstream:
+    name: Update Pikalog app with upstream changes
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout target repo
+        uses: actions/checkout@v3
+
+      - name: Sync upstream changes
+        id: sync
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Fetch latest code
+          git clone https://github.com/inventor96/pikalog /tmp/latest
+          rm -rf /tmp/latest/.git
+
+          # Copy workflow files to keep them the same
+          rm -rf /tmp/latest/.github/workflows
+          cp -r .github/workflows /tmp/latest/.github/workflows
+
+          # Replace everything except .git with the upstream contents;
+          # the copy above already carries this repo's workflow files,
+          # so they come back in this step
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -r /tmp/latest/. .
+
+          # Update the repository
+          git add .
+          git diff --cached --quiet || git commit -m "Sync latest code from upstream"
+          git push
+```
+
+### Doing the update
+
+Once the workflow is set up, you can trigger it manually from the "Actions" tab in your repository. Select the workflow you created ("Update Pikalog app with upstream changes") and click the "Run workflow" button. The workflow will fetch the latest changes from the upstream repository and apply them to your instance. Cloudflare Workers will then deploy the updated app automatically.
+
+### Back up and restore
+
+If you wish to back up your data before updating your app, export the complete remote D1 database, including schema and data, with Wrangler. The output is plain SQL and contains your inventory, supply history, and registered passkey public credentials; it does not contain authenticator private keys. Store it securely outside the repository and never commit it.
+
+```sh
+npx wrangler d1 export pikalog-db --remote --output="$HOME/pikalog-backup-$(date +%F).sql"
+```
+
+To restore an export, use a new or intentionally prepared database and review the SQL before executing it. Do not replay a full export blindly against a live database.
+
+```sh
+npx wrangler d1 execute pikalog-db --remote --file="$HOME/pikalog-backup.sql"
+```
+
+See Cloudflare's [D1 import and export guide](https://developers.cloudflare.com/d1/best-practices/import-export-data/) for options and limitations. Keep backups current and test restoration separately; Pikalog does not create or retain backups for you.
 
 ## Local development
 
@@ -36,51 +114,9 @@ PIKALOG_PASSWORD=
 
 Fill in the password locally; do not commit it or reuse another service's credentials.
 
-The local Worker uses a local D1 database. Run `npm test` for the domain tests and `npm run build` for type-checking and a production build.
+The local Worker uses a local D1 database. Run `npm test` for the domain tests and `npm run build` for type-checking and a production build. Passkeys work over `localhost` without HTTPS during local development; on a deployed hostname, HTTPS is required.
 
-Catalog data is validated against the bundled JSON schemas and manifest checksums with `npm run catalog:validate`. The Worker starts with the bundled catalog and checks the configured public catalog source daily; manual sync is available from the run-out outlook.
-
-## Cloudflare deployment
-
-The Deploy to Cloudflare button creates a Git copy in your account, prompts for a household password, and provisions the configured D1 binding. Use at least 8 characters; 12 to 15 or more is strongly recommended. The deploy command applies D1 migrations before publishing the Worker and Vue assets. The repository must be public for the button to work.
-
-For an existing deployment, set or update `PIKALOG_PASSWORD` with `npx wrangler secret put PIKALOG_PASSWORD`. Keep it private. The Worker fails closed until a password of at least 8 characters is configured.
-
-## Passkeys
-
-After signing in, add or remove passkeys in Configuration. Enrollment requires the household password again. Passkeys require HTTPS; `localhost` is supported for local development. Each passkey belongs to the exact hostname where it was added, so changing between a `workers.dev` address and a custom domain requires enrolling again on the new hostname. Keep the household password configured as a recovery method.
-
-## Back up and restore
-
-Export the complete remote D1 database, including schema and data, with Wrangler. The output is plain SQL and contains your inventory, supply history, and registered passkey public credentials; it does not contain authenticator private keys. Store it securely outside the repository and never commit it.
-
-```sh
-npx wrangler d1 export pikalog-db --remote --output="$HOME/pikalog-backup-$(date +%F).sql"
-```
-
-To restore an export, use a new or intentionally prepared database and review the SQL before executing it. Do not replay a full export blindly against a live database.
-
-```sh
-npx wrangler d1 execute pikalog-db --remote --file="$HOME/pikalog-backup.sql"
-```
-
-See Cloudflare's [D1 import and export guide](https://developers.cloudflare.com/d1/best-practices/import-export-data/) for options and limitations. Keep backups current and test restoration separately; Pikalog does not create or retain backups for you.
-
-## Update your deployment
-
-The catalog sync updates public catalog data only. It does not update the app code or database schema. To bring upstream app changes into your GitHub copy, review and merge them rather than replacing your repository; then test and deploy from your copy:
-
-```sh
-git remote add upstream https://github.com/inventor96/pikalog.git
-git fetch upstream
-git merge upstream/main
-npm ci
-npm test
-npm run build
-npm run deploy
-```
-
-Skip `git remote add` if you already have an `upstream` remote. Resolve and review merge conflicts before deploying. `npm run deploy` applies remote D1 migrations, builds the app, and deploys the Worker; it requires Wrangler access to your Cloudflare account and your `PIKALOG_PASSWORD` secret to be configured. Back up D1 before deploying schema changes.
+Catalog data is validated against the bundled JSON schemas and manifest checksums with `npm run catalog:validate`. The Worker starts with the bundled catalog and checks the configured public catalog source daily; manual sync is available from the Configuration page.
 
 ## Privacy and intended use
 
