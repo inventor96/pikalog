@@ -7,6 +7,14 @@ import bundledProducts from '../catalog/products.json'
 const catalogFiles = ['categories.json', 'products.json', 'barcode_formats.json'] as const
 const defaultCatalogBaseUrl = 'https://raw.githubusercontent.com/inventor96/pikalog/main/catalog'
 
+export async function ensureSeeded(db: D1Database): Promise<void> {
+	try {
+		await seedBundledCatalog(db)
+	} catch {
+		// ignore seeding errors to avoid breaking requests
+	}
+}
+
 type SyncState = {
 	version: string | null
 	last_status: string | null

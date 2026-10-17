@@ -9,7 +9,7 @@ import {
 } from '../src/domain/ledger'
 import { calculateSupplyForecast, type ForecastEvent } from '../src/domain/forecast'
 import { estimateProjectedReceipts } from '../src/domain/receipts'
-import { syncCatalog } from './catalog-sync'
+import { ensureSeeded, syncCatalog } from './catalog-sync'
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server'
 import { calculateDurationStatistics, type DurationLedgerEvent } from '../src/domain/statistics'
 import {
@@ -316,6 +316,11 @@ app.post('/api/auth/passkeys/login/verify', async (context) => {
 	if (context.req.header('Origin') !== new URL(context.req.url).origin) {
 		return context.json({ error: 'same_origin_required' }, 403)
 	}
+	try {
+		await ensureSeeded(context.env.DB)
+	} catch {
+		// ignore seeding errors
+	}
 	const body = await context.req.json<{ challenge?: unknown; response?: unknown }>().catch(() => null)
 	if (!body || typeof body.challenge !== 'string' || body.challenge.length > 128 || !isWebAuthnResponse(body.response)) {
 		return context.json({ error: 'invalid_request' }, 400)
@@ -484,6 +489,11 @@ app.post('/api/auth/login', async (context) => {
 	}
 	if (context.req.header('Origin') !== new URL(context.req.url).origin) {
 		return context.json({ error: 'same_origin_required' }, 403)
+	}
+	try {
+		await ensureSeeded(context.env.DB)
+	} catch {
+		// ignore seeding errors
 	}
 
 	const body = await context.req.json<{ password?: unknown }>().catch(() => null)
@@ -1403,8 +1413,15 @@ app.get('/api/inventory', async (context) => {
 })
 
 const worker = Object.assign(app, {
-	scheduled(_controller: ScheduledController, env: Env, context: ExecutionContext) {
-		context.waitUntil(syncCatalog(env.DB, env.CATALOG_BASE_URL).then(() => undefined).catch(() => undefined))
+	async scheduled(_controller: ScheduledController, env: Env, context: ExecutionContext) {
+		context.waitUntil((async () => {
+			try {
+				await ensureSeeded(env.DB)
+				await syncCatalog(env.DB, env.CATALOG_BASE_URL)
+			} catch {
+				// ignore
+			}
+		})())
 	},
 })
 
