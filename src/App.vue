@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { RouterLink, RouterView, useRoute } from 'vue-router'
-import { Boxes, ChartNoAxesCombined, ClipboardList, LayoutDashboard, PackageOpen } from '@lucide/vue'
+import { ChartNoAxesCombined, ClipboardList, LayoutDashboard, PackageOpen, Settings } from '@lucide/vue'
 
 const route = useRoute()
 </script>
@@ -34,15 +34,6 @@ const route = useRoute()
           <span>Inventory</span>
         </RouterLink>
         <RouterLink
-          to="/configuration"
-          class="nav-link"
-          :class="{ 'nav-link--active': route.name === 'configuration' }"
-          :aria-current="route.name === 'configuration' ? 'page' : undefined"
-        >
-          <Boxes :size="18" :stroke-width="1.8" />
-          <span>Configuration</span>
-        </RouterLink>
-        <RouterLink
           to="/activity"
           class="nav-link"
           :class="{ 'nav-link--active': route.name === 'activity' }"
@@ -59,6 +50,15 @@ const route = useRoute()
         >
           <ChartNoAxesCombined :size="18" :stroke-width="1.8" />
           <span>Outlook</span>
+        </RouterLink>
+        <RouterLink
+          to="/configuration"
+          class="nav-link"
+          :class="{ 'nav-link--active': route.name === 'configuration' }"
+          :aria-current="route.name === 'configuration' ? 'page' : undefined"
+        >
+          <Settings :size="18" :stroke-width="1.8" />
+          <span>Configuration</span>
         </RouterLink>
       </nav>
 
