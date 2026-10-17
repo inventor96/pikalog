@@ -175,17 +175,10 @@ export function matchPackageScan(
 	scan: { gtin: string; lot?: string; serial?: string; expiry?: string },
 	packages: readonly PackageScanCandidate[],
 ): PackageScanCandidate[] {
-	const eligible = packages.filter((candidate) => candidate.gtin === scan.gtin
-		&& (!scan.serial || candidate.serial === scan.serial))
-	const tiers = [
-		scan.lot && scan.expiry
-			? eligible.filter((candidate) => candidate.lot === scan.lot && candidate.expiry === scan.expiry)
-			: [],
-		scan.lot ? eligible.filter((candidate) => candidate.lot === scan.lot) : [],
-		scan.expiry ? eligible.filter((candidate) => candidate.expiry === scan.expiry) : [],
-		eligible,
-	]
-	const matches = tiers.find((tier) => tier.length > 0) ?? []
+	const matches = packages.filter((candidate) => candidate.gtin === scan.gtin
+		&& (!scan.serial || candidate.serial === scan.serial)
+		&& (!scan.lot || candidate.lot === scan.lot)
+		&& (!scan.expiry || candidate.expiry === scan.expiry))
 	return [...matches].sort(
 		(first, second) => first.receivedOn.localeCompare(second.receivedOn) || first.id - second.id,
 	)
@@ -197,32 +190,21 @@ export function matchUnitScan(
 	usedSerials: readonly string[] = [],
 ): UnitPackageMatch {
 	const eligible = packages.filter(
-		(candidate) => candidate.containsProductId === scan.productId && candidate.unitsRemaining > 0,
+		(candidate) => candidate.containsProductId === scan.productId
+			&& candidate.unitsRemaining > 0
+			&& (!scan.lot || candidate.lot === scan.lot)
+			&& (!scan.expiry || candidate.expiry === scan.expiry),
 	)
 	const serialAlreadyUsed = Boolean(scan.serial && usedSerials.includes(scan.serial))
-
-	if (scan.lot && scan.expiry) {
-		const match = oldestPackage(eligible.filter(
-			(candidate) => candidate.lot === scan.lot && candidate.expiry === scan.expiry,
-		))
-		if (match) return { kind: 'matched', packageId: match.id, matchedBy: 'lot_expiry', serialAlreadyUsed }
-	}
-
-	if (scan.lot) {
-		const match = oldestPackage(eligible.filter((candidate) => candidate.lot === scan.lot))
-		if (match) return { kind: 'matched', packageId: match.id, matchedBy: 'lot', serialAlreadyUsed }
-	}
-
-	if (scan.expiry) {
-		const match = oldestPackage(eligible.filter((candidate) => candidate.expiry === scan.expiry))
-		if (match) return { kind: 'matched', packageId: match.id, matchedBy: 'expiry', serialAlreadyUsed }
-	}
-
-	if (scan.gtin) {
+	const matchedBy = scan.lot && scan.expiry ? 'lot_expiry'
+		: scan.lot ? 'lot'
+		: scan.expiry ? 'expiry'
+		: scan.gtin ? 'gtin'
+		: null
+	if (matchedBy) {
 		const match = oldestPackage(eligible)
-		if (match) return { kind: 'matched', packageId: match.id, matchedBy: 'gtin', serialAlreadyUsed }
+		if (match) return { kind: 'matched', packageId: match.id, matchedBy, serialAlreadyUsed }
 	}
-
 	return { kind: 'implicit', serialAlreadyUsed }
 }
 

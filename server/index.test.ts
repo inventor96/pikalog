@@ -1281,7 +1281,7 @@ describe('Worker authentication routes', () => {
 		await app.request('/api/receipts', {
 			method: 'POST',
 			headers: { Origin: 'http://localhost', Cookie: cookie, 'Content-Type': 'application/json' },
-			body: JSON.stringify({ productId: packData.product.id, lot: 'LOT-PAST', expiry: '2027-01-01', receivedOn: '2026-10-14' }),
+			body: JSON.stringify({ productId: packData.product.id, lot: 'LOT-PAST', expiry: '2026-10-14', receivedOn: '2026-10-14' }),
 		}, env)
 
 		const response = await app.request('/api/unit-scans', {

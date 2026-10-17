@@ -166,19 +166,15 @@ describe('matchUnitScan', () => {
 		})
 	})
 
-	it('falls back to expiry when the lot does not match', () => {
+	it('does not fall through to expiry when the scanned lot does not match', () => {
 		expect(matchUnitScan({ productId: 4, lot: 'LOT-MISSING', expiry: '2027-01-01' }, packages)).toMatchObject({
-			kind: 'matched',
-			packageId: 2,
-			matchedBy: 'expiry',
+			kind: 'implicit',
 		})
 	})
 
-	it('prefers a lot match over a conflicting expiry-only match', () => {
+	it('requires the scanned expiry to match when a lot is provided', () => {
 		expect(matchUnitScan({ productId: 4, lot: 'LOT-A', expiry: '2027-02-01' }, packages)).toMatchObject({
-			kind: 'matched',
-			packageId: 1,
-			matchedBy: 'lot',
+			kind: 'implicit',
 		})
 	})
 
@@ -191,6 +187,14 @@ describe('matchUnitScan', () => {
 			kind: 'matched',
 			packageId: 1,
 			matchedBy: 'lot',
+		})
+	})
+
+	it('matches by expiry when no lot is provided and chooses the oldest matching package', () => {
+		expect(matchUnitScan({ productId: 4, expiry: '2027-01-01' }, packages)).toMatchObject({
+			kind: 'matched',
+			packageId: 2,
+			matchedBy: 'expiry',
 		})
 	})
 
@@ -226,19 +230,30 @@ describe('matchPackageScan', () => {
 			.toEqual([1])
 	})
 
-	it('uses the oldest same-lot box before expiry-only matches', () => {
-		expect(matchPackageScan({ gtin: 'BOX-1', lot: 'LOT-A', expiry: '2027-01-01' }, packages.slice(1)).map(({ id }) => id))
-			.toEqual([3])
+	it('does not fall through to expiry-only when the scanned lot matches no box', () => {
+		expect(matchPackageScan({ gtin: 'BOX-1', lot: 'LOT-X', expiry: '2027-01-01' }, packages).map(({ id }) => id))
+			.toEqual([])
 	})
 
-	it('uses the oldest expiry match when no lot matches', () => {
-		expect(matchPackageScan({ gtin: 'BOX-1', lot: 'LOT-X', expiry: '2027-01-01' }, packages).map(({ id }) => id))
+	it('requires the scanned expiry to match when a lot is provided', () => {
+		expect(matchPackageScan({ gtin: 'BOX-1', lot: 'LOT-A', expiry: '2027-01-01' }, packages.slice(1)).map(({ id }) => id))
+			.toEqual([])
+	})
+
+	it('uses the oldest expiry match when no lot is provided', () => {
+		expect(matchPackageScan({ gtin: 'BOX-1', expiry: '2027-01-01' }, packages).map(({ id }) => id))
 			.toEqual([2, 1])
 	})
 
 	it('uses a scanned serial as the package identity', () => {
-		expect(matchPackageScan({ gtin: 'BOX-1', lot: 'LOT-A', serial: 'BOX-SERIAL-2' }, packages).map(({ id }) => id))
+		expect(matchPackageScan({ gtin: 'BOX-1', serial: 'BOX-SERIAL-2' }, packages).map(({ id }) => id))
 			.toEqual([2])
+	})
+
+	it('matches on a scanned serial only when the scanned lot also matches', () => {
+		expect(matchPackageScan({ gtin: 'BOX-1', lot: 'LOT-B', serial: 'BOX-SERIAL-2' }, packages).map(({ id }) => id))
+			.toEqual([2])
+		expect(matchPackageScan({ gtin: 'BOX-1', lot: 'LOT-A', serial: 'BOX-SERIAL-2' }, packages)).toEqual([])
 	})
 
 	it('does not fall back to another package when the scanned serial is unknown', () => {
