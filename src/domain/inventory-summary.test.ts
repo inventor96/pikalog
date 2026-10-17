@@ -21,14 +21,32 @@ describe('summarizeInventory', () => {
 				categoryId: 10,
 				categoryName: 'Care',
 				itemCount: 14,
-				availableBoxCount: 4,
+				availableBoxCount: 3,
 				pastDateUnits: 4,
 				products: [
-					{ groupKey: 'gtin:ITEM-1', productName: 'Daily item', manufacturer: 'North', gtin: 'ITEM-1', itemCount: 13, availableBoxCount: 3, pastDateUnits: 4 },
+					{ groupKey: 'gtin:ITEM-1', productName: 'Daily item', manufacturer: 'North', gtin: 'ITEM-1', itemCount: 13, availableBoxCount: 2, pastDateUnits: 4 },
 					{ groupKey: 'gtin:ITEM-2', productName: 'Travel item', manufacturer: 'South', gtin: 'ITEM-2', itemCount: 1, availableBoxCount: 1, pastDateUnits: 0 },
 				],
 			},
 		])
+	})
+
+	it('does not count individual scans of a contained product as boxes', () => {
+		const summary = summarizeInventory([
+			{ product_id: 1, product_name: 'Sensor pack', manufacturer: 'Maker', gtin: 'PACK-1', category_name: 'Care', units_remaining: 5, expiry: null },
+			{ product_id: 2, product_name: 'G4 sensor', manufacturer: 'Maker', gtin: 'UNIT-1', category_name: 'Care', units_remaining: 1, expiry: null },
+		], [
+			{ id: 1, category_id: 10, category_name: 'Care', manufacturer: 'Maker', name: 'Sensor pack', gtin: 'PACK-1', contains_product_id: 2 },
+			{ id: 2, category_id: 10, category_name: 'Care', manufacturer: 'Maker', name: 'G4 sensor', gtin: 'UNIT-1', contains_product_id: null },
+		], '2026-10-15')
+
+		expect(summary[0]).toMatchObject({
+			itemCount: 6,
+			availableBoxCount: 1,
+			products: [
+				{ groupKey: 'gtin:UNIT-1', itemCount: 6, availableBoxCount: 1 },
+			],
+		})
 	})
 
 	it('groups by category name when a product is missing from the catalog', () => {

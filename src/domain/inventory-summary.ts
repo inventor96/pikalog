@@ -43,6 +43,11 @@ export function summarizeInventory(
 	today: string,
 ): InventoryCategorySummary[] {
 	const productById = new Map(products.map((product) => [product.id, product]))
+	const containedProductIds = new Set(
+		products
+			.filter((product) => product.contains_product_id !== null)
+			.map((product) => product.contains_product_id as number),
+	)
 	const categories = new Map<string, {
 		categoryId: number | null
 		categoryName: string
@@ -79,7 +84,8 @@ export function summarizeInventory(
 			? inventoryPackage.units_remaining
 			: 0
 		category.pastDateUnits += pastDateUnits
-		if (inventoryPackage.units_remaining > 0) category.availableBoxCount += 1
+		const countsAsBox = !containedProductIds.has(inventoryPackage.product_id)
+		if (countsAsBox && inventoryPackage.units_remaining > 0) category.availableBoxCount += 1
 
 		const productGtin = product?.gtin ?? inventoryPackage.gtin
 		const productId = product?.id ?? inventoryPackage.product_id
@@ -99,7 +105,7 @@ export function summarizeInventory(
 		}
 		productSummary.itemCount += inventoryPackage.units_remaining
 		productSummary.pastDateUnits += pastDateUnits
-		if (inventoryPackage.units_remaining > 0) productSummary.availableBoxCount += 1
+		if (countsAsBox && inventoryPackage.units_remaining > 0) productSummary.availableBoxCount += 1
 	}
 
 	return [...categories.values()]
