@@ -433,6 +433,67 @@
   text-overflow: ellipsis;
 }
 
+.box-list-table th:nth-child(2),
+.box-list-table td:nth-child(2) {
+  width: 132px;
+}
+
+.box-list-table th:nth-child(3),
+.box-list-table td:nth-child(3) {
+  width: 118px;
+}
+
+.box-list-table th:nth-child(4),
+.box-list-table td:nth-child(4) {
+  width: 82px;
+  text-align: right;
+}
+
+.box-list-table th:nth-child(5),
+.box-list-table td:nth-child(5) {
+  width: 108px;
+}
+
+.box-list-row td {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.box-list-row td:first-child {
+  padding-left: 20px;
+  color: var(--color-ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.is-past-expiry {
+  color: var(--color-coral);
+  font-weight: 600;
+}
+
+.box-status {
+  display: inline-flex;
+  min-height: 19px;
+  align-items: center;
+  border-radius: 3px;
+  padding: 0 6px;
+  background: var(--color-green-soft);
+  color: #355d45;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.box-status--open {
+  background: #f4eadf;
+  color: #79542c;
+}
+
+.box-status--expired {
+  background: #f0e6e2;
+  color: #85432f;
+}
+
 .receipt-backdrop {
   position: fixed;
   inset: 0;
@@ -1404,7 +1465,8 @@
   }
 
   .inventory-category-row td::before,
-  .inventory-product-row td::before {
+  .inventory-product-row td::before,
+  .box-list-row td::before {
     content: attr(data-label);
     margin-right: 4px;
     color: var(--color-ink-faint);
@@ -1422,6 +1484,10 @@
 
   .inventory-product-row {
     padding-left: 12px !important;
+  }
+
+  .box-list-row td {
+    padding-left: 20px;
   }
 
   .inventory-product-row th {
