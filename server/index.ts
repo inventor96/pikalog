@@ -1,11 +1,14 @@
 import { Hono } from 'hono'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import {
+	matchOpenIdentityPackage,
 	matchUnitScan,
 	planPackageOpen,
 	planUnitStart,
 	type LedgerEventDraft,
+	type OpenIdentityCandidate,
 	type OpenPackageCandidate,
+	type UnitPackageMatch,
 } from '../src/domain/ledger'
 import { calculateSupplyForecast, type ForecastEvent } from '../src/domain/forecast'
 import { estimateProjectedReceipts } from '../src/domain/receipts'
@@ -136,11 +139,13 @@ async function loadActiveUnit(db: D1Database, productId: number): Promise<{
 		JOIN effective_products AS target_product ON target_product.id = ?
 		WHERE active_product.category_id = target_product.category_id
 			AND started.type = 'unit_started'
+			AND NOT EXISTS (SELECT 1 FROM events AS undoing_start WHERE undoing_start.note = 'undo:' || started.id)
 			AND NOT EXISTS (
 				SELECT 1 FROM events AS ended
 				WHERE ended.package_id = started.package_id AND ended.type = 'unit_ended'
 					AND (ended.occurred_on > started.occurred_on
 						OR (ended.occurred_on = started.occurred_on AND ended.id > started.id))
+					AND NOT EXISTS (SELECT 1 FROM events AS undoing_end WHERE undoing_end.note = 'undo:' || ended.id)
 			)
 		ORDER BY started.occurred_on DESC, started.id DESC
 		LIMIT 1
@@ -629,7 +634,8 @@ app.get('/api/activity', async (context) => {
 	}>()
 	const durationEvents = results.filter(
 		(event): event is typeof event & { type: 'unit_started' | 'unit_ended' } =>
-			event.type === 'unit_started' || event.type === 'unit_ended',
+			(event.type === 'unit_started' || event.type === 'unit_ended')
+			&& !event.undone && event.undoOfEventId === null,
 	)
 	return context.json({
 		events: results.slice(-30).reverse(),
@@ -649,8 +655,8 @@ app.post('/api/events/:id/undo', async (context) => {
 
 	const target = await context.env.DB.prepare(`
 		SELECT events.id, events.package_id AS packageId, events.type, events.qty,
-			events.occurred_on AS occurredOn, events.unit_expiry AS unitExpiry, events.note,
-			products.contains_qty AS containsQty
+			events.occurred_on AS occurredOn, events.note,
+			products.contains_qty AS containsQty, products.category_id AS categoryId
 		FROM events
 		JOIN packages ON packages.id = events.package_id
 		JOIN effective_products AS products ON products.id = packages.product_id
@@ -661,9 +667,9 @@ app.post('/api/events/:id/undo', async (context) => {
 		type: UndoTargetType
 		qty: number
 		occurredOn: string
-		unitExpiry: string | null
 		note: string | null
 		containsQty: number | null
+		categoryId: number
 	}>()
 	if (!target) return context.json({ error: 'event_not_found' }, 404)
 
@@ -671,16 +677,40 @@ app.post('/api/events/:id/undo', async (context) => {
 		SELECT 1 AS undone FROM events AS undoing WHERE undoing.note = 'undo:' || ? LIMIT 1
 	`).bind(eventId).first<{ undone: number }>()
 
-	let isUnitActive = false
+	let pairedEnd: { id: number; packageId: number } | null = null
 	if (target.type === 'unit_started') {
-		const ended = await context.env.DB.prepare(`
-			SELECT 1 AS ended FROM events
-			WHERE events.package_id = ? AND events.type = 'unit_ended'
-				AND (events.occurred_on > ? OR (events.occurred_on = ? AND events.id > ?))
+		const superseded = await context.env.DB.prepare(`
+			SELECT 1 AS superseded
+			FROM events AS later
+			JOIN packages AS later_package ON later_package.id = later.package_id
+			JOIN effective_products AS later_product ON later_product.id = later_package.product_id
+			WHERE later.type = 'unit_started' AND later.id > ?
+				AND later_product.category_id = ?
+				AND NOT EXISTS (SELECT 1 FROM events AS undoing WHERE undoing.note = 'undo:' || later.id)
 			LIMIT 1
-		`).bind(target.packageId, target.occurredOn, target.occurredOn, eventId)
-			.first<{ ended: number }>()
-		isUnitActive = !ended
+		`).bind(eventId, target.categoryId).first<{ superseded: number }>()
+		if (!superseded) {
+			const candidate = await context.env.DB.prepare(`
+				SELECT previous.id AS id, previous.package_id AS packageId
+				FROM events AS previous
+				JOIN packages AS previous_package ON previous_package.id = previous.package_id
+				JOIN effective_products AS previous_product ON previous_product.id = previous_package.product_id
+				WHERE previous.id < ? AND previous.type = 'unit_ended'
+					AND previous.end_reason = 'planned'
+					AND previous.package_id != ?
+					AND previous_product.category_id = ?
+					AND NOT EXISTS (SELECT 1 FROM events AS undoing WHERE undoing.note = 'undo:' || previous.id)
+					AND NOT EXISTS (
+						SELECT 1 FROM events AS between_events
+						WHERE between_events.type = 'unit_started'
+							AND between_events.id > previous.id AND between_events.id < ?
+					)
+				ORDER BY previous.id DESC
+				LIMIT 1
+			`).bind(eventId, target.packageId, target.categoryId, eventId)
+				.first<{ id: number; packageId: number }>()
+			if (candidate) pairedEnd = candidate
+		}
 	}
 
 	const packageEvents = await context.env.DB.prepare(
@@ -693,12 +723,11 @@ app.post('/api/events/:id/undo', async (context) => {
 		type: target.type,
 		qty: target.qty,
 		occurredOn: target.occurredOn,
-		unitExpiry: target.unitExpiry,
 		note: target.note,
 	}, {
 		occurredOn,
 		isUndone: Boolean(undoing),
-		isUnitActive,
+		pairedEnd,
 		packageContainsQty: target.containsQty,
 		packageEventCount: packageEvents?.count ?? 0,
 	})
@@ -817,6 +846,8 @@ app.get('/api/forecast', async (context) => {
 			JOIN effective_products AS products ON products.id = packages.product_id
 			LEFT JOIN effective_products AS unit_products ON unit_products.id = products.contains_product_id
 			JOIN effective_categories AS categories ON categories.id = products.category_id
+			WHERE (events.note IS NULL OR events.note NOT LIKE 'undo:%')
+				AND NOT EXISTS (SELECT 1 FROM events AS undoing WHERE undoing.note = 'undo:' || events.id)
 			ORDER BY events.occurred_on, events.id
 		`).all<ForecastEvent & { productName: string }>(),
 		context.env.DB.prepare('SELECT value FROM settings WHERE key = ?')
@@ -1352,13 +1383,42 @@ app.post('/api/unit-scans', async (context) => {
 		WHERE unit_serial IS NOT NULL
 			AND NOT EXISTS (SELECT 1 FROM events AS undoing WHERE undoing.note = 'undo:' || events.id)
 	`).all<{ unit_serial: string }>()
-	const match = matchUnitScan({
+	let match: UnitPackageMatch = matchUnitScan({
 		productId: unitProduct.id,
 		gtin,
 		lot,
 		expiry,
 		serial,
 	}, candidateRows, usedSerialRows.map((event) => event.unit_serial))
+	if (match.kind === 'implicit') {
+		const { results: identityRows } = await context.env.DB.prepare(`
+			SELECT packages.id, packages.lot, packages.serial, packages.expiry,
+				(SELECT identity_received.occurred_on FROM events AS identity_received
+					WHERE identity_received.package_id = packages.id AND identity_received.type = 'received'
+					ORDER BY identity_received.id LIMIT 1) AS receivedOn,
+				MAX(0, COALESCE(products.contains_qty, 1)
+					+ COALESCE((SELECT SUM(qty) FROM events AS adjusted
+						WHERE adjusted.package_id = packages.id AND adjusted.type = 'adjusted'), 0)
+					- COALESCE((SELECT SUM(qty) FROM events AS consumed
+						WHERE consumed.package_id = packages.id AND consumed.type IN ('unit_started', 'discarded')), 0)
+				) AS unitsRemaining
+			FROM packages JOIN effective_products AS products ON products.id = packages.product_id
+			WHERE packages.product_id = ?
+				AND EXISTS (SELECT 1 FROM events AS received
+					WHERE received.package_id = packages.id AND received.type = 'received')
+				AND EXISTS (SELECT 1 FROM events AS opened
+					WHERE opened.package_id = packages.id AND opened.type = 'opened')
+		`).bind(unitProduct.id).all<OpenIdentityCandidate>()
+		const identityMatch = matchOpenIdentityPackage({ lot, expiry, serial }, identityRows)
+		if (identityMatch) {
+			match = {
+				kind: 'matched',
+				packageId: identityMatch.packageId,
+				matchedBy: identityMatch.matchedBy,
+				serialAlreadyUsed: match.serialAlreadyUsed,
+			}
+		}
+	}
 	if (match.serialAlreadyUsed) return context.json({ error: 'serial_already_used' }, 409)
 	if (match.kind === 'matched' && markBoxOpened) {
 		const candidate = candidateRows.find((row) => row.id === match.packageId)
@@ -1404,11 +1464,13 @@ app.post('/api/unit-scans', async (context) => {
 		JOIN packages AS active_package ON active_package.id = started.package_id
 		JOIN effective_products AS active_product ON active_product.id = active_package.product_id
 		WHERE active_product.category_id = ? AND started.type = 'unit_started'
+			AND NOT EXISTS (SELECT 1 FROM events AS undoing_start WHERE undoing_start.note = 'undo:' || started.id)
 			AND NOT EXISTS (
 				SELECT 1 FROM events AS ended
 				WHERE ended.package_id = started.package_id AND ended.type = 'unit_ended'
 					AND (ended.occurred_on > started.occurred_on
 						OR (ended.occurred_on = started.occurred_on AND ended.id > started.id))
+					AND NOT EXISTS (SELECT 1 FROM events AS undoing_end WHERE undoing_end.note = 'undo:' || ended.id)
 			)
 		ORDER BY started.occurred_on DESC, started.id DESC LIMIT 1
 	`).bind(unitProduct.category_id).first<{

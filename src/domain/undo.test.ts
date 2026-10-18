@@ -5,7 +5,7 @@ function context(overrides: Partial<EventUndoContext> = {}): EventUndoContext {
 	return {
 		occurredOn: '2026-10-17',
 		isUndone: false,
-		isUnitActive: false,
+		pairedEnd: null,
 		packageContainsQty: null,
 		packageEventCount: 1,
 		...overrides,
@@ -63,32 +63,23 @@ describe('planEventUndo', () => {
 		expect(plan).toEqual({ kind: 'not_reversible', reason: 'package_has_history' })
 	})
 
-	it('restores stock and closes an active started unit without reusing its serial', () => {
+	it('restores stock and voids the paired auto-end when the start switched away from another unit', () => {
 		const plan = planEventUndo(
-			target({ type: 'unit_started', qty: 1, occurredOn: '2026-10-12', unitExpiry: '2026-12-01' }),
-			context({ isUnitActive: true }),
+			target({ type: 'unit_started', qty: 1, occurredOn: '2026-10-12' }),
+			context({ pairedEnd: { id: 7, packageId: 2 } }),
 		)
 		expect(plan).toEqual({
 			kind: 'ready',
 			events: [
 				{ packageId: 3, type: 'adjusted', qty: 1, occurredOn: '2026-10-17', note: 'undo:10' },
-				{
-					packageId: 3,
-					type: 'unit_ended',
-					qty: 1,
-					occurredOn: '2026-10-12',
-					unitExpiry: '2026-12-01',
-					endReason: 'other',
-					note: 'undo:10',
-				},
+				{ packageId: 2, type: 'adjusted', qty: 0, occurredOn: '2026-10-17', note: 'undo:7' },
 			],
 		})
 	})
 
-	it('only restores stock when the started unit is already ended', () => {
-		const plan = planEventUndo(target({ type: 'unit_started' }), context({ isUnitActive: false }))
+	it('only restores stock when the started unit has no paired auto-end', () => {
+		const plan = planEventUndo(target({ type: 'unit_started' }), context())
 		expect(plan).toMatchObject({ kind: 'ready', events: [{ type: 'adjusted', qty: 1 }] })
-		expect(plan).toMatchObject({ kind: 'ready' })
 		if (plan.kind === 'ready') expect(plan.events).toHaveLength(1)
 	})
 

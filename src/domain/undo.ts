@@ -8,14 +8,13 @@ export type UndoTargetEvent = {
 	type: UndoTargetType
 	qty: number
 	occurredOn: string
-	unitExpiry?: string | null
 	note?: string | null
 }
 
 export type EventUndoContext = {
 	occurredOn: string
 	isUndone: boolean
-	isUnitActive: boolean
+	pairedEnd: { id: number; packageId: number } | null
 	packageContainsQty: number | null
 	packageEventCount: number
 }
@@ -88,15 +87,13 @@ export function planEventUndo(target: UndoTargetEvent, context: EventUndoContext
 				occurredOn: context.occurredOn,
 				note,
 			}]
-			if (context.isUnitActive) {
+			if (context.pairedEnd) {
 				events.push({
-					packageId: target.packageId,
-					type: 'unit_ended',
-					qty: 1,
-					occurredOn: target.occurredOn,
-					unitExpiry: target.unitExpiry ?? undefined,
-					endReason: 'other',
-					note,
+					packageId: context.pairedEnd.packageId,
+					type: 'adjusted',
+					qty: 0,
+					occurredOn: context.occurredOn,
+					note: `undo:${context.pairedEnd.id}`,
 				})
 			}
 			return { kind: 'ready', events }

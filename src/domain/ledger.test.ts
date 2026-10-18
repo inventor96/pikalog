@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
+	matchOpenIdentityPackage,
 	matchUnitScan,
 	matchPackageScan,
 	planPackageOpen,
 	planUnitStart,
+	type OpenIdentityCandidate,
 	type OpenPackageCandidate,
 	type PackageOpenInput,
 } from './ledger'
@@ -215,6 +217,39 @@ describe('matchUnitScan', () => {
 	it('flags a serial that has already appeared in the ledger', () => {
 		expect(matchUnitScan({ productId: 4, gtin: '00000000000001', serial: 'S-1' }, packages, ['S-1']))
 			.toMatchObject({ serialAlreadyUsed: true })
+	})
+})
+
+describe('matchOpenIdentityPackage', () => {
+	const packages: OpenIdentityCandidate[] = [
+		{ id: 1, lot: 'LOT-A', serial: 'S-1', expiry: '2027-01-01', receivedOn: '2026-01-02', unitsRemaining: 1 },
+		{ id: 2, lot: 'LOT-B', serial: 'S-2', expiry: '2027-01-01', receivedOn: '2026-01-01', unitsRemaining: 2 },
+		{ id: 3, lot: 'LOT-C', serial: 'S-3', expiry: '2027-02-01', receivedOn: '2025-12-01', unitsRemaining: 0 },
+	]
+
+	it('matches an open package with remaining stock by lot and expiry', () => {
+		expect(matchOpenIdentityPackage({ lot: 'LOT-A', expiry: '2027-01-01' }, packages)).toMatchObject({
+			packageId: 1,
+			matchedBy: 'lot_expiry',
+		})
+	})
+
+	it('requires the serial to match when the scan provides one', () => {
+		expect(matchOpenIdentityPackage({ lot: 'LOT-A', serial: 'S-2' }, packages)).toBeNull()
+		expect(matchOpenIdentityPackage({ lot: 'LOT-A', serial: 'S-1' }, packages)).toMatchObject({ packageId: 1 })
+	})
+
+	it('ignores packages without remaining stock', () => {
+		expect(matchOpenIdentityPackage({ lot: 'LOT-C' }, packages)).toBeNull()
+	})
+
+	it('falls back to the oldest eligible package for a scan with only identity fields missing', () => {
+		expect(matchOpenIdentityPackage({}, packages)).toMatchObject({ packageId: 2, matchedBy: 'gtin' })
+	})
+
+	it('matches by lot alone and by expiry alone', () => {
+		expect(matchOpenIdentityPackage({ lot: 'LOT-B' }, packages)).toMatchObject({ packageId: 2, matchedBy: 'lot' })
+		expect(matchOpenIdentityPackage({ expiry: '2027-01-01' }, packages)).toMatchObject({ packageId: 2, matchedBy: 'expiry' })
 	})
 })
 

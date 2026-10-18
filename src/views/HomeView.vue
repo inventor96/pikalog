@@ -217,8 +217,13 @@ async function handleBarcodeDetected(result: BarcodeParseResult, mode: 'receive'
       await openPackage(target.id)
       return
     }
+    const openMatch = sortedMatches.find((pkg) => pkg.is_open && pkg.units_remaining > 0)
+    if (openMatch) {
+      await startUnitFromScan(result, markBoxOpened)
+      return
+    }
     if (sortedMatches.some((pkg) => pkg.is_open)) {
-      scanNotice.value = 'This package is already open. Scan a unit barcode to start the next unit.'
+      scanNotice.value = 'This package is already open and has no units remaining.'
       return
     }
     await startUnitFromScan(result, markBoxOpened)

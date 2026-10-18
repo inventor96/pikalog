@@ -74,6 +74,20 @@ export type UnitPackageMatch =
 	  }
 	| { kind: 'implicit'; serialAlreadyUsed: boolean }
 
+export type OpenIdentityCandidate = {
+	id: number
+	lot?: string | null
+	serial?: string | null
+	expiry?: string | null
+	receivedOn: string
+	unitsRemaining: number
+}
+
+export type OpenIdentityMatch = {
+	packageId: number
+	matchedBy: 'lot_expiry' | 'lot' | 'expiry' | 'gtin'
+}
+
 export type PackageOpenPlan =
 	| {
 			kind: 'confirmation_required'
@@ -207,6 +221,27 @@ export function matchUnitScan(
 		if (match) return { kind: 'matched', packageId: match.id, matchedBy, serialAlreadyUsed }
 	}
 	return { kind: 'implicit', serialAlreadyUsed }
+}
+
+export function matchOpenIdentityPackage(
+	scan: { lot?: string; expiry?: string; serial?: string },
+	candidates: readonly OpenIdentityCandidate[],
+): OpenIdentityMatch | null {
+	const eligible = candidates.filter(
+		(candidate) => candidate.unitsRemaining > 0
+			&& (!scan.lot || candidate.lot === scan.lot)
+			&& (!scan.expiry || candidate.expiry === scan.expiry)
+			&& (!scan.serial || candidate.serial === scan.serial),
+	)
+	const match = [...eligible].sort(
+		(first, second) => first.receivedOn.localeCompare(second.receivedOn) || first.id - second.id,
+	)[0]
+	if (!match) return null
+	const matchedBy = scan.lot && scan.expiry ? 'lot_expiry'
+		: scan.lot ? 'lot'
+		: scan.expiry ? 'expiry'
+		: 'gtin'
+	return { packageId: match.id, matchedBy }
 }
 
 export function planPackageOpen(input: PackageOpenInput): PackageOpenPlan {
